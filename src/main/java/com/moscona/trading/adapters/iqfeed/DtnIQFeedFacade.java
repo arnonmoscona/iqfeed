@@ -108,7 +108,7 @@ public class DtnIQFeedFacade implements IDtnIQFeedFacade {
      *          if after trying everything else, was still in an invalid state.
      */
     @Override
-    public void init(IDtnIQFeedConfig config) throws InvalidArgumentException, InvalidStateException {  // FIXME need to refactor config and decouple from Intellitrade
+    public void init(IDtnIQFeedConfig config) throws InvalidArgumentException, InvalidStateException {
         this.config = config;
         try {
             Map myConfig = (Map)config.getComponentConfigFor("DtnIQFeedFacade");
