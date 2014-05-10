@@ -1,7 +1,9 @@
 package com.moscona.trading.adapters.iqfeed;
 
+import com.moscona.events.EventPublisher;
 import com.moscona.exceptions.InvalidArgumentException;
 import com.moscona.exceptions.InvalidStateException;
+import com.moscona.trading.IServicesBundle;
 import com.moscona.trading.ServicesBundle;
 import com.moscona.util.IAlertService;
 import com.moscona.util.monitoring.stats.IStatsService;
@@ -29,4 +31,8 @@ public interface IDtnIQFeedConfig {
 
     public IStatsService getStatsService();
 
+    public IServicesBundle createServicesBundle();
+
+    public EventPublisher getEventPublisher(); // FIXME remove dependency on EventPublisher
 }
+
