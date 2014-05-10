@@ -4,7 +4,7 @@ import com.moscona.exceptions.InvalidArgumentException;
 import com.moscona.exceptions.InvalidStateException;
 import com.moscona.trading.ServicesBundle;
 import com.moscona.util.IAlertService;
-import com.moscona.util.IStatsService;
+import com.moscona.util.monitoring.stats.IStatsService;
 
 /**
  * Configuration data for IQFeed adapters
