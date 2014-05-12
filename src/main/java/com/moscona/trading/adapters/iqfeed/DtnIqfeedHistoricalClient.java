@@ -3,6 +3,11 @@ package com.moscona.trading.adapters.iqfeed;
 import com.moscona.events.EventPublisher;
 import com.moscona.threads.RealTimeProviderConnectionThread;
 import com.moscona.trading.IServicesBundle;
+import com.moscona.trading.ServicesBundle;
+import com.moscona.trading.adapters.DataSourceCoreStats;
+import com.moscona.trading.excptions.MissingSymbolException;
+import com.moscona.trading.streaming.HeavyTickStreamRecord;
+import com.moscona.util.ISimpleDescriptiveStatistic;
 import com.moscona.util.SafeRunnable;
 import com.moscona.util.async.AsyncFunctionFutureResults;
 import com.moscona.exceptions.InvalidArgumentException;
@@ -12,14 +17,18 @@ import com.moscona.trading.streaming.TimeSlotBarWithTimeStamp;
 import com.moscona.util.TimeHelper;
 import com.moscona.util.collections.Pair;
 import com.moscona.util.monitoring.MemoryStateHistory;
+import com.moscona.util.monitoring.stats.IStatsService;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.time.DateUtils;
 
+import java.io.File;
 import java.io.PrintWriter;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -61,6 +70,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedClient {
     public static final String IQFEED_COMPATIBLE_VERSION = "4.7.2.0";
     //public static final int DEFAULT_HICCUP_INTERVAL_MILLIS = 500;
     public static final String IQFEED_NO_DATA_RESPONSE = "!NO_DATA!";
+    public static final int MAX_STATS_PUBLIHING_FREQUENCY = 1000; // msec no more frequent than that
 
 
     public static final String TAG_PREFIX_31_DAY = "31 day ";
@@ -72,8 +82,11 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedClient {
     public static final String NAME = "IQFeed";
 
     private IDtnIQFeedFacade facade = null;
+    private boolean initialized = false;
+    private boolean isShutDown = false;
 
     private AtomicBoolean daemonsShouldBeRunning;
+    private Thread heartBeatThread = null; // guarantees some code gets executed at a regular frequency
     private AtomicBoolean isWatchingSymbols;
 
     private int initialConnectionTimeoutMillis;
@@ -97,6 +110,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedClient {
     private IServicesBundle defaultServiceBundle=null;
     private IServicesBundle parserDaemonServiceBundle=null;
     private IServicesBundle lookupThreadServiceBundle=null;
+    private IServicesBundle heartBeatServicesBundle;
 
     boolean debugFlag = false;
     String debugTag = "not set";
@@ -151,6 +165,8 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedClient {
     private String iqFeedVersion;
     private float currentInternetBandwidthConsumption;
     private float currentLocalBandwidthConsumption;
+
+
 //    private StaleTickLogger staleTickLogger;
 
     public DtnIqfeedHistoricalClient() {
@@ -188,6 +204,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedClient {
         fundamentalsRequested = new AtomicBoolean(false);
     }
 
+    //<editor-fold desc="Initialization, heartbeet, stats publishing">
     /**
      * A method which when called on an instance produced by a default constructor, would either make this instance
      * fully functional, or would result in an exception indicating that the instance should be thrown away.
@@ -229,18 +246,18 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedClient {
 
             initFacade(config, myConfig);
 
-            config.getEventPublisher().onEvent(EventPublisher.Event.TRADING_CLOSED, new SafeRunnable() {
-                @Override
-                public void runWithPossibleExceptions() throws Exception {
-                    stopWatchingSymbols();
-                }
-            }.setName("IQFeed stop watching symbols"));
+//            config.getEventPublisher().onEvent(EventPublisher.Event.TRADING_CLOSED, new SafeRunnable() {
+//                @Override
+//                public void runWithPossibleExceptions() throws Exception {
+//                    stopWatchingSymbols();
+//                }
+//            }.setName("IQFeed stop watching symbols"));
 
             heartBeatServicesBundle = config.createServicesBundle();
             startHeartBeat();
             listenForStatsUpdateRequests();
 
-            staleTickLogger = new StaleTickLogger(config);
+//            staleTickLogger = new StaleTickLogger(config);
 
             initialized = true;
 //            debug("initialization","complete");
@@ -256,49 +273,683 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedClient {
         }
     }
 
+    /**
+     * Starts the heartbeat thread
+     */
+    @SuppressWarnings({"unchecked"})
+    private void startHeartBeat() {
+        heartBeatThread = new RealTimeProviderConnectionThread(new SafeRunnable() {
+            @Override
+            public void runWithPossibleExceptions() throws Exception {
+                while (daemonsShouldBeRunning.get() && !Thread.currentThread().isInterrupted()) {
+                    try {
+                        onHeartBeat();
+                    } catch (InvalidStateException e) {
+                        getHeartBeatServicesBundle().getAlertService().sendAlert("Exception during IQFeed client heartbeat: " + e, IQFEED_ERROR_ALERT_MESSAGE_TYPE, e);
+                    }
+                    Thread.sleep(HEARTBEAT_SLEEP_MILLIS);
+                }
+            }
+        }, "IQFeed client heartbeat", config);
+        heartBeatThread.start();
+    }
+
+    /**
+     * Called once every heartbeat
+     *
+     * @throws com.moscona.exceptions.InvalidStateException
+     */
+    private void onHeartBeat() throws InvalidStateException {
+        //autoStartTradingDay();
+        monitorRawMessageQueueSize(rawMessageQueueSize.get());
+        //monitorForHiccups();
+        collectStatsCounters();
+    }
+
+    /**
+     * Collects stats on raw message queue size and issues alerts when it gets too long
+     *
+     * @param size
+     */
+    private void monitorRawMessageQueueSize(int size) {
+        //FIXME implement DtnIQFeedClient.monitorRawMessageQueueSize
+    }
+
+    private void collectStatsCounters() throws InvalidStateException {
+        final IStatsService stats = getHeartBeatServicesBundle().getStatsService();
+        String prefix = "IQFeed client ";
+        stats.setStat(prefix + "rawMessageQueueSize", rawMessageQueueSize.get());
+//        stats.setStat(prefix + "tickQueueSize", tickQueueSize.get());
+        stats.setStat(prefix + "blockingWaitCounter", blockingWaitCounter.get());
+//        stats.setStat(prefix + "tradeTickCounter", tradeTickCounter.get());
+//        stats.setStat(prefix + "nonTradeTickCounter", nonTradeTickCounter.get());
+//        stats.setStat(prefix + "lastObservedTickTs", lastObservedTickTs.get());
+//        stats.setStat(prefix + "maxObservedTickTimestamp", maxObservedTickTimestamp.get());
+        stats.setStat(prefix + "currentLocalBandwidthConsumption", currentLocalBandwidthConsumption);
+        stats.setStat(prefix + "currentInternetBandwidthConsumption", currentInternetBandwidthConsumption);
+//        synchronized (staleStatsMonitor) {
+//            IStatsService parserStats = parserDaemonServiceBundle.getStatsService();
+//            prefix += "staleness ";
+//            stats.setStat(prefix + "staleTickCounter", parserStats.getStat(STAT_TOTAL_STALE_TICKS).getLong());
+//            stats.setStat(prefix + "staleTickLastAge", parserStats.getStat(STAT_LAST_STALE_TICK_AGE).getLong());
+//            ISimpleDescriptiveStatistic desc = parserStats.getStat(STAT_DESCRIPTIVE_STALE_AGE).getDescriptiveStatistics();
+//            stats.setStat(prefix + "staleTickAverageAge", desc.average());
+//            stats.setStat(prefix + "staleTickMaxAge", desc.max());
+//            stats.setStat(prefix + "staleTickMinAge", desc.min());
+//            stats.setStat(prefix + "staleTickStdevAge", desc.stdev());
+//
+//            stats.setStat(prefix + "outOfOrderTickCounter", parserStats.getStat(STAT_TOTAL_OUT_OF_ORDER_NOT_CONVERTED).getLong());
+//            stats.setStat(prefix + "outOfOrderTicksCurried", parserStats.getStat(STAT_TOTAL_OUT_OF_ORDER_CONVERTED).getLong());
+//            desc = parserStats.getStat(STAT_DESCRIPTIVE_OUT_OF_ORDER_AGE).getDescriptiveStatistics();
+//            stats.setStat(prefix + "outOfOrderTickAverageAge", desc.average());
+//            stats.setStat(prefix + "outOfOrderTickMaxAge", desc.max());
+//            stats.setStat(prefix + "outOfOrderTickMinAge", desc.min());
+//            stats.setStat(prefix + "outOfOrderTickStdevAge", desc.stdev());
+//        }
+    }
+
+    private void listenForStatsUpdateRequests() {
+        config.getEventPublisher().onEvent(EventPublisher.Event.STATS_UPDATE_REQUEST, new SafeRunnable() {
+            @Override
+            public void runWithPossibleExceptions() throws Exception {
+                publishStatsUpdate();
+            }
+        }.setName("IQFeed stats update request listener"));
+
+        config.getEventPublisher().onEvent(EventPublisher.Event.STALE_STATS_RESET_REQUEST, new SafeRunnable() {
+            @Override
+            public void runWithPossibleExceptions() throws Exception {
+                resetStaleStats();
+            }
+        }.setName("IQFeed staleStats reset responder"));
+
+        config.getEventPublisher().onEvent(EventPublisher.Event.DUMP_MEMORY_TRACKER_REQUEST, new SafeRunnable() {
+            @Override
+            public void runWithPossibleExceptions() throws Exception {
+                dumpMemStats();
+            }
+        }.setName("IQFeed DUMP_MEMORY_TRACKER_REQUEST responder"));
+    }
+
+    protected  void dumpMemStats() {
+//        if (memStats == null) {
+//            return;
+//        }
+//        try {
+//            // figure out the file
+//            String marketTreeArchivePath = config.getLocalStore().getArchivedMarketTreePath(TimeHelper.nowAsCalendar());
+//            String dumpFilePath = new File(marketTreeArchivePath).getParent() + "/memSampleHistory.csv";
+//
+//            // request a dump
+//            memStats.print(new File(dumpFilePath));
+//        } catch (Exception e) {
+//            config.getAlertService().sendAlert("Failed to dump memory stats in IQFeed adapeter: " + e, e);
+//        }
+    }
+
+    protected void resetStaleStats() {
+//        synchronized (staleStatsMonitor) {
+//            IStatsService stats = parserDaemonServiceBundle.getStatsService();
+//            stats.initStatWithDescriptiveStats(STAT_DESCRIPTIVE_STALE_AGE, 0);
+//            stats.setStat(STAT_TOTAL_STALE_TICKS, 0);
+//            stats.setStat(STAT_LAST_STALE_TICK_AGE, 0);
+//            stats.setStat(STAT_TOTAL_OUT_OF_ORDER_NOT_CONVERTED, 0);
+//            stats.setStat(STAT_TOTAL_OUT_OF_ORDER_CONVERTED, 0);
+//            stats.initStatWithDescriptiveStats(STAT_DESCRIPTIVE_OUT_OF_ORDER_AGE, 0);
+//            lastStaleTickSymbol = "";
+//            lastOutOfOrderTickSymbol = "";
+//        }
+    }
+
+    protected void publishStatsUpdate() {
+        int now = TimeHelper.now();
+        int publishInterval = now - lastPublishedStatsTimestamp.get();
+        if (publishInterval >= 0 && publishInterval < MAX_STATS_PUBLIHING_FREQUENCY) {
+            // if < 0 then it was basically yesterday
+            // if positive but less than the maximum publish frequency - just ignore the request
+            return;
+        }
+
+        try {
+            try {
+                collectStatsCounters();
+            } catch (Exception e) {
+                config.getAlertService().sendAlert("Exception while trying to report stats, collectStatsCounters(): " + e);
+                return; // ignore request
+            }
+
+            IStatsService stats = getHeartBeatServicesBundle().getStatsService();
+            float avgStaleness = (float) stats.getStat("IQFeed client staleness staleTickAverageAge").getDouble();
+            int lastStaleTickAge = (int) stats.getStat("IQFeed client staleness staleTickLastAge").getLong();
+            long totalTicks = stats.getStat("IQFeed client tradeTickCounter").getLong();
+            long totalStaleTicks = stats.getStat("IQFeed client staleness staleTickCounter").getLong();
+            float percentStaleTicks = (100.0f * totalStaleTicks) / totalTicks;
+            long outOfOrderTicks = stats.getStat("IQFeed client staleness outOfOrderTickCounter").getLong();
+            float bwConsumption = (float) stats.getStat("IQFeed client currentInternetBandwidthConsumption").getDouble();
+            int tickQueueSize = (int) stats.getStat("IQFeed client tickQueueSize").getLong();
+
+            DataSourceCoreStats retval = createDataSourceCoreStats(avgStaleness, lastStaleTickAge, totalStaleTicks, percentStaleTicks, outOfOrderTicks, bwConsumption, tickQueueSize);  // IMPORTANT: real time data excluded
+            retval.publish(config.getEventPublisher());
+        } catch (Exception e) {
+            config.getAlertService().sendAlert("Exception while trying to report stats: " + e, e);
+        } finally {
+            lastPublishedStatsTimestamp.set(TimeHelper.now());
+        }
+    }
+
+    protected DataSourceCoreStats createDataSourceCoreStats(float avgStaleness, int lastStaleTickAge, long totalStaleTicks, float percentStaleTicks, long outOfOrderTicks, float bwConsumption, int tickQueueSize) {
+        return new DataSourceCoreStats(avgStaleness, lastStaleTickAge,
+                outOfOrderTicks, percentStaleTicks, getRawMessageQueueSize(),
+                -1, totalStaleTicks, tickQueueSize, bwConsumption, "",
+                null, -1, null, "");
+    }
+    //</editor-fold>
+
+    //<editor-fold desc="Connection lifecycle events">
     @Override
+    /**
+     * Called when the facade completed the connection setup and is ready to receive commands
+     */
     public void onConnectionEstablished() {
-        //fixme implement DtnIqfeedHistoricalClient.onConnectionEstablished()
+        facadeInitializationTimeoutLock.lock();
+        try {
+            facade.onConnectionEstablished();
+            connectionConfirmed.set(true);
+            isConnected.set(true);
+            connectionConfirmedCondition.signalAll();
+        } finally {
+            facadeInitializationTimeoutLock.unlock();
+        }
     }
 
     @Override
+    /**
+     * Called when a connection that is supposed to be up is lost
+     */
     public void onConnectionLost() {
-        //fixme implement DtnIqfeedHistoricalClient.onConnectionLost()
+        if (!isConnected.get()) {
+            return; // didn't think I was connected anyway
+        }
+        sendParserAlert("Lost connection", null);
+        isConnected.set(false);
+        sendParserAlert("Trying to reconnect", null);
+        try {
+            facade.requestConnect();
+        } catch (InvalidStateException e) {
+            sendParserAlert("Exception while trying to reconnect: " + e, e);
+            onException(e, false);
+        }
     }
 
     @Override
     public void onConnectionTerminated() {
         //fixme implement DtnIqfeedHistoricalClient.onConnectionTerminated()
     }
+    //</editor-fold>
 
     @Override
-    public void onException(Throwable ex, boolean wasHandled) {
+    /**
+     * Called whenever the facade encounters an exception.
+     *
+     * @param ex         the exception
+     * @param wasHandled whether or not it was handled already
+     */ public void onException(Throwable ex, boolean wasHandled) {
         //fixme implement DtnIqfeedHistoricalClient.onException()
     }
 
     @Override
+    /**
+     * Called when the facade receives new data from the admin connection. This is typically more than one message.
+     *
+     * @param data the data as a String
+     */
     public void onAdminData(String data) {
-        //fixme implement DtnIqfeedHistoricalClient.onAdminData()
+        sampleMemory(data.length());
+        //        debug("got data",data);
+        rawMessageQueue.add(new MessageQueueItem<String>(data));
+        int queueSize = rawMessageQueueSize.incrementAndGet();
+        //        debug("queue size",""+queueSize);
     }
 
     @Override
+    /**
+     * Called when the facade receives new data from the level1 connection. This is typically more than one message.
+     *
+     * @param data the data as a String
+     */
     public void onLevelOneData(String data) {
-        //fixme implement DtnIqfeedHistoricalClient.onLevelOneData()
+        onAdminData(data); // right now there is no reason to use separate structures on these
     }
 
     @Override
+    /**
+     * A callback for the facade to notify the client that something terrible happened and everything needs to be shut down.
+     *
+     * @param e
+     */
     public void onFatalException(Throwable e) {
-        //fixme implement DtnIqfeedHistoricalClient.onFatalException()
+        try {
+            shutdown();
+        } catch (InvalidStateException e1) {
+            defaultServiceBundle.getAlertService().sendAlert("Error while shutting down IQFeed: " + e, e);
+        }
+    }
+
+    /**
+     * Notifies the data source that a shutdown is in progress and instructs it to shut down all connections
+     */
+    public void shutdown() throws InvalidStateException {
+        if (initialized && !isShutDown) {
+            facade.stopIQConnect();
+            stopDaemonThreads();
+            isShutDown = true;
+            isConnected.set(false);
+        }
+    }
+
+    /**
+     * Stop all supporting threads
+     */
+    public void stopDaemonThreads() {
+        daemonsShouldBeRunning.set(false);
     }
 
     @Override
+    /**
+     * A callback for the facade to notify the client about new data received on the lookup port
+     *
+     * @param rawMessages
+     */
     public void onLookupData(String rawMessages) {
-        //fixme implement DtnIqfeedHistoricalClient.onLookupData()
+        // at this point we basically have a list of tagged line (each line) which all need to be added to their
+        // pending lists until we see a line with tag,!ENDMSG! - at which point we need to route the whole list to its
+        // handler and remove it from pending
+        if (StringUtils.isBlank(rawMessages)) {
+            return; // nothing to do
+        }
+        String[] lines = StringUtils.split(rawMessages, "\n");
+        for (String line : lines) {
+            String[] fields = StringUtils.split(line, ",");
+            if (fields.length == 0) {
+                continue;
+            }
+            String tag = fields[0];
+            if (! tagToHandlerIdMap.containsKey(tag)) {
+                sendLookupAlert("Unregistered tag in response from lookup (ignoring): "+tag, IQFEED_LOOKUP_ERROR_ALERT_MESSAGE_TYPE);
+                continue;
+            }
+
+            ArrayList<String[]> list = pendingLookupData.get(tag);
+            getBarsRequestPendingCalls().markFirstResponseTimeStamp(tag); // track time to first byte for the tag
+
+            if (fields[1].trim().equals("!ENDMSG!")) {
+                removeFromPendingAndHandle(tag,list);
+            }
+            else {
+                // add to pending and continue
+                if (list==null) {
+                    list = new ArrayList<String[]>();
+                    pendingLookupData.put(tag,list);
+                }
+                list.add(fields);
+            }
+        }
     }
+
+
+    // ==============================================================================================================
+    // Lookup handling
+    // ==============================================================================================================
+
+    //<editor-fold desc="Lookup handling">
+
+    private void removeFromPendingAndHandle(String tag, ArrayList<String[]> list) {
+        long start = System.currentTimeMillis();
+        getBarsRequestPendingCalls().markLastByteTimeStamp(tag);
+        getBarsRequestPendingCalls().setDataSize(tag, list.size());
+        try {
+            pendingLookupData.remove(tag);
+            int handlerId = tagToHandlerIdMap.get(tag);
+            switch (handlerId) {
+                case HANDLER_31_DAY_BARS:
+                    handle31DayBars(list);
+                    break;
+                case HANDLER_MINUTE_BARS:
+                    handleMinuteBars(list);
+                    break;
+                case HANDLER_TICKS_TO_SECOND_BARS:
+                    handleTicksToSecondBars(list);
+                    break;
+                case HANDLER_DAY_BARS:
+                    handleDayBars(list);
+                    break;
+                default:
+                    sendLookupAlert("Unknown handler for tag '" + tag + "': " + handlerId, IQFEED_LOOKUP_ERROR_ALERT_MESSAGE_TYPE);
+            }
+        } finally {
+            long processingTime = System.currentTimeMillis() - start;
+            getBarsRequestPendingCalls().setPostResponseProcessingTime(tag, processingTime);
+        }
+    }
+
+    /**
+     * A method that handles minute bars from HIT requests
+     * @param list
+     */
+    @SuppressWarnings({"ThrowableInstanceNeverThrown"})
+    private void handleDayBars(ArrayList<String[]> list) {
+        handleIQFeedBars(list, false, -24, Calendar.HOUR, "lookup_day_bars");
+    }
+
+    @SuppressWarnings({"ThrowableInstanceNeverThrown"})
+    private void handle31DayBars(ArrayList<String[]> list) {
+        // FIXME This should be factored out as a part of a pluggable add-on
+        if (list.size() == 0) {
+            return; // nothing to do and don't know how to tell any pending call
+        }
+        // BIDU daily,2010-05-10 00:00:00,69.4790,66.7440,66.7450,69.4780,1724987,0,
+        // missing symbol error:
+        //   Response: bogus daily,E,Invalid symbol.,
+        // tag,date,high,low,open,close,total volume,period volume
+        // http://www.iqfeed.net/dev/api/docs/HistoricalviaTCPIP.cfm
+        // returns data via dailyDataPendingCalls
+        String[] first = list.get(0);
+        String tag = first[0];
+
+        // Check for error message
+        if (first[1].equals("E")) {
+            String symbol = tag.replaceFirst(TAG_PREFIX_31_DAY, "").trim();
+            dailyDataPendingCalls.throwException(tag, new MissingSymbolException(symbol, first[2], "IQFeed reported error: " + first[2]));
+        }
+
+        if (list.size() < 1) {
+            String message = "handle31DayBars(): Expected at least 1 data point.";
+            sendLookupAlert(message, IQFEED_LOOKUP_ERROR_ALERT_MESSAGE_TYPE);
+            dailyDataPendingCalls.throwException(tag, new Exception(message));
+            return;
+        }
+
+        String[] currentLine = null;
+        try {
+            long sum = 0;
+            Bar retval = null;
+            for (String[] fields : list) {
+
+                if (fields.length < 7) {
+                    throw new Exception("Error while parsing raw response line. Insufficient number of fields: " + StringUtils.join(fields, ','));
+                }
+                // figure out the date for this
+                SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd"); // reall ha also " hh:mm:ss" but we ignore that here
+                String[] timestampParts = StringUtils.split(fields[1], " ");
+                Calendar date = Calendar.getInstance();
+                date.setTime(format.parse(timestampParts[0]));
+                Calendar today = TimeHelper.today();
+                if (DateUtils.isSameDay(today, date)) {
+                    continue; // ignore data from today. We want yesterday's close
+                }
+
+
+                currentLine = fields;
+                float high = Float.parseFloat(fields[2]);
+                float low = Float.parseFloat(fields[3]);
+                float open = Float.parseFloat(fields[4]);
+                float close = Float.parseFloat(fields[5]);
+                int volume = Integer.parseInt(fields[6]);
+                sum += volume;
+                if (retval == null) {
+                    retval = new Bar(open, close, high, low, volume);
+                } else {
+                    retval.setOpen(open); // we're going backward in time
+                    retval.setHigh(Math.max(high, retval.getHigh()));
+                    retval.setLow(Math.min(low, retval.getLow()));
+                }
+                dailyDataPendingCalls.returnToCallers(tag, retval, config.getLookupStatsService(), "handle_31day_bars");
+                return;
+            }
+            if (retval == null) {
+                throw new Exception("handle31DayBars(): expected return value to have a value at this point, but got a null...");
+            }
+        } catch (Exception e) {
+            // cause the calling function to throw an exception
+            dailyDataPendingCalls.throwException(tag, new Exception("handle31DayBars(): Error while processing line: " + StringUtils.join(currentLine, ',') + " :" + e, e), config.getLookupStatsService(), "handle_31day_bars");
+        }
+    }
+
+    /**
+     * A method that handles minute bars from HIT requests
+     * @param list
+     */
+    @SuppressWarnings({"ThrowableInstanceNeverThrown"})
+    private void handleMinuteBars(ArrayList<String[]> list) {
+        // FIXME This should be factored out as a part of a pluggable add-on
+        handleIQFeedBars(list, true, -1, Calendar.MINUTE, "lookup_1min_bars");
+    }
+
+    private void handleIQFeedBars(ArrayList<String[]> list, boolean useSecondVolumeNumber, int unitIncrement, int unit, String prefix) {
+        // FIXME This should be factored out as a part of a pluggable add-on
+        if (list.size() == 0) {
+            return; // nothing to do and don't know how to tell any pending call
+        }
+        String[] first = list.get(0);
+        String tag = first[0];
+
+        // sending command: HIT,INTC,60,20100708 093000,20100708 094000,,,,1,Partial day minutes: INTC
+        // Response:
+        // Partial day minutes: INTC,2010-07-08 09:31:00,20.3600,20.2200,20.3400,20.2805,1266398,502507,
+        // tag,minute end,high,low,open,close,volume,minute volume,
+        //
+        // sending command: HDT,CLB,20090731,20100731,,1,oneYear CLB
+        // Response:
+        // oneYear CLB,2009-08-03 00:00:00,44.8650,43.5300,43.6400,44.8650,395520,0,
+        // tag,date (following),high,low,open,close,volume,open interest,
+        //
+        // No data response:
+        // Partial day minutes: INTX,E,!NO_DATA!,
+        // Invalid symbol response:
+        // Partial day minutes: INTCX,E,Invalid symbol.,
+
+
+        AsyncFunctionFutureResults<List<TimeSlotBarWithTimeStamp>> pending = getBarsRequestPendingCalls();
+
+        // Check for error message
+        if (first[1].equals("E")) {
+            String literalError = first[2];
+            if (literalError.equals(IQFEED_NO_DATA_RESPONSE)) {
+                // make an empty response
+                pending.returnToCallers(tag, new ArrayList<TimeSlotBarWithTimeStamp>(), config.getLookupStatsService(), prefix);
+                return; // and there's nothing else to do here
+            }
+
+            boolean canRetry = canRetry(literalError);
+            pending.throwException(tag, new IQFeedError(literalError, "Error received in response to bar request tagged: '" +
+                    tag + "'  literal error: '" + literalError + "'", canRetry));
+            return;
+        }
+
+        String[] currentLine = null;
+
+        try {
+            ArrayList<TimeSlotBarWithTimeStamp> retval = new ArrayList<TimeSlotBarWithTimeStamp>();  // TimeSlotBar, actually
+
+            for (String[] line : list) {
+                currentLine = line;
+
+                if (line[1].equals("E")) {
+                    pending.throwException(tag, new Exception("Error received in response to bar request tagged: '" +
+                            tag + "'  literal error: '" + line[2] + "'"));
+                    return;
+                }
+
+                int field = 1;
+                String timestampString = line[field++];
+                Calendar timestamp = TimeHelper.parse(timestampString);
+                timestamp.add(unit, unitIncrement); // IQFeed gives back as timestamp the closing time!
+                float high = Float.parseFloat(line[field++].trim());
+                float low = Float.parseFloat(line[field++].trim());
+                float open = Float.parseFloat(line[field++].trim());
+                float close = Float.parseFloat(line[field++].trim());
+                String volume1String = line[field++].trim();
+                String volume2String = line[field].trim();
+
+                TimeSlotBarWithTimeStamp bar = new TimeSlotBarWithTimeStamp();
+                bar.set(toCents(open), toCents(close), toCents(high), toCents(low), Integer.parseInt(useSecondVolumeNumber ? volume2String : volume1String));
+                bar.setTimestamp(timestamp);
+
+                bar.close();
+                retval.add(bar);
+            }
+
+            pending.returnToCallers(tag, retval, config.getLookupStatsService(), prefix);
+        } catch (Exception e) {
+            pending.throwException(tag, new Exception("handleIQFeedBars(): Error while processing line: " + StringUtils.join(currentLine, ',') + " :" + e, e), config.getLookupStatsService(), prefix);
+        }
+    }
+
+    /**
+     * This method does the heavy lifting for the get seconds bar request. We requested ticks from IQFeed
+     * and we convert them into second granularity bars in this method.
+     * The ticks were requested using an HTT lookup request.
+     * @param list
+     */
+    @SuppressWarnings({"ThrowableInstanceNeverThrown"})
+    private void handleTicksToSecondBars(ArrayList<String[]> list) {
+        // FIXME This should be factored out as a part of a pluggable add-on
+        if (list.size() == 0) {
+            return; // nothing to do and don't know how to tell any pending call
+        }
+        String[] first = list.get(0);
+        String tag = first[0];
+
+        // Sending command: HTT,BP,20100617 155900,20100617 160000,,093000,160000,1,BP last minute
+        // Typical response:
+        //   BP last minute,2010-06-17 15:59:00,31.6800,100,109806761,31.6800,31.6900,2850178,0,0,C,
+        //   request id,timestamp,price,qty,volume,bid,ask,tickID,bid size,ask size,transaction basis
+        // If the trade is in extended hours you get something like:
+        //   BP last minute,2010-06-17 16:00:00,31.6900,700,110697543,31.7000,31.7100,2883649,0,0,E,
+        //   (note that the last field is E)
+        // there are no values defined at this time other than C and E
+        // For safety we will only use C values, assuming extended hours are not interesting to us.
+
+        AsyncFunctionFutureResults<List<TimeSlotBarWithTimeStamp>> pending = getBarsRequestPendingCalls();
+        // Check for error message
+        String lookup1secBars = "lookup_1sec_bars";
+        if (first[1].equals("E")) {
+            String literalError = first[2];
+            if (literalError.equals(IQFEED_NO_DATA_RESPONSE)) {
+                // make an empty response
+                pending.returnToCallers(tag, new ArrayList<TimeSlotBarWithTimeStamp>(), config.getLookupStatsService(), lookup1secBars);
+                config.getAlertService().sendAlert("IQFeed no data response for " + tag);
+                return; // and there's nothing else to do here
+            }
+
+            boolean canRetry = canRetry(literalError);
+
+            String message = "Error received in response to tick request tagged: '" +
+                    tag + "'  literal error: '" + literalError + "'";
+            pending.throwException(tag, new IQFeedError(literalError, message, canRetry), config.getLookupStatsService(), lookup1secBars);
+            config.getAlertService().sendAlert("IQFeed exception " + message + " (can retry: " + canRetry + ")");
+            return;
+        }
+
+        String[] currentLine = first;
+        String currentSecondString = first[1];
+        try {
+            ArrayList<TimeSlotBarWithTimeStamp> retval = new ArrayList<TimeSlotBarWithTimeStamp>();  // TimeSlotBar, actually
+            TimeSlotBarWithTimeStamp currentBar = new TimeSlotBarWithTimeStamp();
+
+            for (String[] line : list) {
+                currentLine = line;
+
+                if (line[1].equals("E")) {
+                    pending.throwException(tag, new Exception("Error received in response to bar request tagged: '" +
+                            tag + "'  literal error: '" + line[2] + "'"));
+                    return;
+                }
+
+                String tradeType = line[10];
+                if (tradeType.equals("C")) {
+                    // exclude extended trading transactions
+                    String timestamp = line[1];
+                    long timestampMillis = TimeHelper.parse(timestamp).getTimeInMillis();
+
+                    Float price = Float.parseFloat(line[2]);
+                    int qty = Integer.parseInt(line[3]);
+
+                    HeavyTickStreamRecord tick = new HeavyTickStreamRecord();
+                    tick.setInsertionTimestamp();
+                    tick.init(timestampMillis, "unknown symbol", price, qty, null, null); // all the ticks in this case are for the same symbol so it does not really matter what it is
+                    if (!timestamp.equals(currentSecondString)) {
+                        // we just passed the second boundary - time to close the bar and add it to the list and then start a new bar
+                        currentBar.close();
+                        Calendar barTimestamp = TimeHelper.parse(currentSecondString);
+                        //barTimestamp.add(Calendar.SECOND,-1); // IQFeed gives as timestamp the closing time
+                        currentBar.setTimestamp(barTimestamp);
+                        retval.add(currentBar);
+                        currentBar = new TimeSlotBarWithTimeStamp();
+                    }
+
+                    currentBar.add(tick);
+                    currentSecondString = timestamp;
+                }
+            }
+            // close and add the last bar
+            currentBar.close();
+            currentBar.setTimestamp(TimeHelper.parse(currentSecondString));
+            retval.add(currentBar);
+
+            pending.returnToCallers(tag, retval, config.getLookupStatsService(), lookup1secBars);
+        } catch (Exception e) {
+            pending.throwException(tag, new Exception("handleTicksToSecondBars(): Error while processing line: " + StringUtils.join(currentLine, ',') + " :" + e, e), config.getLookupStatsService(), lookup1secBars);
+        }
+    }
+
+    private boolean canRetry(String literalError) {
+        return literalError.contains("Could not connect to History socket") ||
+                literalError.contains("Unknown Server Error") ||
+                literalError.contains("Socket Error: 10054 (WSAECONNRESET)");  // connection rest by peer
+    }
+
+    private int toCents(float price) {
+            return Math.round(price*100.0f);
+        }
+
+    //</editor-fold>
 
     // ==============================================================================================================
     // Private methods
     // ==============================================================================================================
+
+    /**
+     * Send an alert using the alert service for the parser service bundle
+     * @param message
+     * @param messageType
+     */
+    private void sendLookupAlert(String message, String messageType) {
+        lookupThreadServiceBundle.getAlertService().sendAlert("IQFeed client (lookup thread): " + message, messageType);
+        if (debugFlag) {
+            //System.err.println("Alert: "+message);
+        }
+    }
+
+    private void sampleMemory(long indicator) {
+        try {
+            long now = System.currentTimeMillis();
+            if (now - lastMemStatsSampleTs >= MEMORY_SAMPLE_MIN_INTERVAL) {
+                lastMemStatsSampleTs = now;
+                getMemStats().sample(indicator);
+            }
+        } catch (Exception e) {
+            System.err.println("Exception: " + e);
+            e.printStackTrace(System.err);
+        }
+    }
+
+    private MemoryStateHistory getMemStats() {
+        if (memStats == null) {
+            memStats = new MemoryStateHistory(MEMSTATS_BUFFER_SIZE);
+        }
+        return memStats;
+    }
 
     private void startMessageParserDaemon() {
         Thread parserDaemon = new RealTimeProviderConnectionThread<IDtnIQFeedConfig>(new Runnable() {
@@ -343,6 +994,62 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedClient {
 
     private void parserDaemonIncStat(String s) {
         parserDaemonServiceBundle.getStatsService().incStat(s);
+    }
+
+    private void initFacade(IDtnIQFeedConfig config, Map myConfig) throws InvalidArgumentException, InvalidStateException {
+        if (myConfig.containsKey("IDtnIQFeedFacade")) {
+            // use the instance provided
+            facade = (IDtnIQFeedFacade) myConfig.get("IDtnIQFeedFacade");
+        } else {
+            // try to construct an instance using IDtnIQFeedFacadeImplementationClassName
+            String facadeClassName = (String) myConfig.get("IDtnIQFeedFacadeImplementationClassName");    // FIXME refactor dependency injection
+            try {
+                facade = (IDtnIQFeedFacade) (Class.forName(facadeClassName).newInstance());
+            } catch (Exception e) {
+                throw new InvalidArgumentException("Failed to create an instance of facade class " + facadeClassName + " :" + e, e);
+            }
+        }
+
+        if (facade == null) {
+            throw new InvalidArgumentException("Could not construct a IDtnIQFeedFacade. Need a valid entry either in 'IDtnIQFeedFacade' (an instance) or in 'IDtnIQFeedFacadeImplementationClassName' (a bean class name implementing IDtnIQFeedFacade)");
+        }
+
+        facade.setClient(this);
+        facade.init(config);
+        initFacadeConnection();
+    }
+
+    /**
+     * waits for confirmation that facade connected to IQConnect and established a connection for the feed
+     *
+     * @throws com.moscona.exceptions.InvalidStateException
+     */
+    private void initFacadeConnection() throws InvalidStateException {
+        SafeRunnable runnable = new SafeRunnable() {
+            @Override
+            public void runWithPossibleExceptions() throws Exception {
+                if (config.simpleComponentConfigEntryWithOverride("DtnIQFeedClient", "mode", "dtnIQFeedClientMode").equals("passive")) {
+                    config.getAlertService().sendAlert("STARTING IN PASSIVE MODE");
+                    facade.startIQConnectPassive();
+                } else {
+                    facade.startIQConnect();
+                }
+            }
+        };
+        new RealTimeProviderConnectionThread(runnable, "IQConnect connection initialization", config).start();
+
+        facadeInitializationTimeoutLock.lock();
+        try {
+            connectionConfirmedCondition.await(initialConnectionTimeoutMillis, TimeUnit.MILLISECONDS); // return value does not matter. We'll double check anyway
+        } catch (InterruptedException e) {
+            throw new InvalidStateException("Interrupted while waiting for IQConnect connection confirmation", e);
+        } finally {
+            facadeInitializationTimeoutLock.unlock();
+        }
+
+        if (!connectionConfirmed.get()) {
+            throw new InvalidStateException("Timed out while waiting for connection confirmation from the IQFeed facade");
+        }
     }
 
     //<editor-fold desc="Raw message handling">
@@ -535,6 +1242,48 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedClient {
     }
 
     /**
+     * Checks to see whether any async call is waiting on this symbol and if so returns the value to it
+     * @param symbol - the symbol in question
+     * @param values - the raw results for this value
+     */
+    private void returnPendingAsyncFundamentalsRequestsOn(String symbol, HashMap<String, Object> values) {
+        Fundamentals result = new Fundamentals();
+        if (result != null) {
+
+        }
+        Object shares = values.get("Common Shares Outstanding");
+        if (shares != null) {
+            // shares are null for an index
+            result.setCommonShares((Integer) shares);
+        }
+        Object yearHigh = values.get("52 Week High");
+        Object yearLow = values.get("52 Week Low");
+        Object averageVolume = values.get("Average Volume");
+        if (yearHigh == null || yearLow == null || averageVolume == null) {
+            sendParserAlert("One of the fundamentals parsed values is null: 52 week high = " + yearHigh +
+                    ", 52 week low = " + yearLow + ", avg volume = " + averageVolume, "Fundamentals parsing problem", null);
+        }
+        if (yearHigh != null) {
+            result.setYearHigh((Float) yearHigh);
+        }
+        if (yearLow != null) {
+            result.setYearLow((Float) yearLow);
+        }
+        if (averageVolume != null) {
+            result.setAverageVolume((Long) averageVolume);
+        }
+        String split1 = values.get("Split Factor 1").toString().trim();
+        if (StringUtils.isNotBlank(split1)) {
+            result.setSplitFactor1(split1);
+        }
+        String split2 = values.get("Split Factor 2").toString().trim();
+        if (StringUtils.isNotBlank(split2)) {
+            result.setSplitFactor2(split2);
+        }
+        getFundamentalsDataPendingCalls().returnToCallers(symbol, result);
+    }
+
+    /**
      * Called for all messages starting with "s,..." The field definitions may be found at <a
      * href="http://www.iqfeed.net/dev/api/docs/SystemMessages.cfm" target="_blank">the IQFeed developer site</a>
      *
@@ -697,6 +1446,28 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedClient {
     public Map getFundamentals(String symbol) {
         return fundamentals.get(symbol);
     }
+
+    public IServicesBundle getHeartBeatServicesBundle() throws InvalidStateException {
+        if (heartBeatServicesBundle == null) {
+            heartBeatServicesBundle = config.createServicesBundle();
+        }
+        return heartBeatServicesBundle;
+    }
+
+    private synchronized AsyncFunctionFutureResults<List<TimeSlotBarWithTimeStamp>> getBarsRequestPendingCalls() {
+        if (barsRequestPendingCalls == null) {
+            barsRequestPendingCalls = new AsyncFunctionFutureResults<List<TimeSlotBarWithTimeStamp>>();
+        }
+        return barsRequestPendingCalls;
+    }
+
+    private synchronized AsyncFunctionFutureResults<Fundamentals> getFundamentalsDataPendingCalls() {
+        if (fundamentalsDataPendingCalls == null) {
+            fundamentalsDataPendingCalls = new AsyncFunctionFutureResults<Fundamentals>();
+        }
+        return fundamentalsDataPendingCalls;
+    }
+
     //</editor-fold>
 
     // ==============================================================================================================
@@ -847,6 +1618,25 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedClient {
             } else {
                 return new Pair<Calendar, Float>(date2, ratio2);
             }
+        }
+    }
+
+    public class IQFeedError extends Exception {
+        private String literalError;
+        private boolean isRetriable = true;
+
+        protected IQFeedError(String literalError, String message, boolean isRetriable) {
+            super(message);
+            this.literalError = literalError;
+            this.isRetriable = isRetriable;
+        }
+
+        public String getLiteralError() {
+            return literalError;
+        }
+
+        public boolean isRetriable() {
+            return isRetriable;
         }
     }
 }

@@ -34,5 +34,7 @@ public interface IDtnIQFeedConfig {
     public IServicesBundle createServicesBundle();
 
     public EventPublisher getEventPublisher(); // FIXME remove dependency on EventPublisher
+
+    public IStatsService getLookupStatsService();
 }
 
