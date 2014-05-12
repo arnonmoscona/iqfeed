@@ -952,20 +952,18 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedClient {
     }
 
     private void startMessageParserDaemon() {
-        Thread parserDaemon = new RealTimeProviderConnectionThread<IDtnIQFeedConfig>(new Runnable() {
-            public void run() {
-                //                debug("message parse daemon","starting");
-                boolean interrupted = false;
-                while (daemonsShouldBeRunning.get() && !interrupted) {
-                    try {
-                        int lines = serviceRawMessageQueue();
-                    } catch (InterruptedException e) {
-                        interrupted = true;
-                        parserDaemonServiceBundle.getAlertService().sendAlert("IQFeed raw message parser daemon INTERRUPTED - exiting thread!");
-                    } catch (Throwable t) {
-                        sendParserAlert("Exception while processing data from IQConnect: " + t, t);
-                        onException(t, false);
-                    }
+        Thread parserDaemon = new RealTimeProviderConnectionThread<>(() -> {
+            //                debug("message parse daemon","starting");
+            boolean interrupted = false;
+            while (daemonsShouldBeRunning.get() && !interrupted) {
+                try {
+                    int lines = serviceRawMessageQueue();
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                    parserDaemonServiceBundle.getAlertService().sendAlert("IQFeed raw message parser daemon INTERRUPTED - exiting thread!");
+                } catch (Throwable t) {
+                    sendParserAlert("Exception while processing data from IQConnect: " + t, t);
+                    onException(t, false);
                 }
             }
         }, "IQFeed raw message parser daemon: " + debugTag, config);
