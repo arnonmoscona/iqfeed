@@ -20,7 +20,7 @@ public interface IDtnIQFeedFacade extends IConfigInitializable<IDtnIQFeedConfig>
      * sets the client that will be called back by the facade on various messages
      * @param client
      */
-    public void setClient(IDtnIQFeedClient client);
+    public void setClient(IDtnIQFeedHistoricalClient client);
 
     /**
      * Starts IQConnect and returns when the connection has been established.

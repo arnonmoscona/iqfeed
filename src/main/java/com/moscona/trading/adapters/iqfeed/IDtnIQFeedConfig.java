@@ -36,5 +36,7 @@ public interface IDtnIQFeedConfig {
     public EventPublisher getEventPublisher(); // FIXME remove dependency on EventPublisher
 
     public IStatsService getLookupStatsService();
+
+    public String getStreamDataStoreRoot(); // FIXME replace with proper injector of a proper logger
 }
 

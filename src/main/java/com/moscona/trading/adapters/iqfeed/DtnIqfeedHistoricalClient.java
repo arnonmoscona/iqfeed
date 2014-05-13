@@ -3,12 +3,14 @@ package com.moscona.trading.adapters.iqfeed;
 import com.moscona.events.EventPublisher;
 import com.moscona.threads.RealTimeProviderConnectionThread;
 import com.moscona.trading.IServicesBundle;
-import com.moscona.trading.ServicesBundle;
 import com.moscona.trading.adapters.DataSourceCoreStats;
+import com.moscona.trading.elements.SymbolChart;
 import com.moscona.trading.excptions.MissingSymbolException;
+import com.moscona.trading.persistence.SplitsDb;
 import com.moscona.trading.streaming.HeavyTickStreamRecord;
-import com.moscona.util.ISimpleDescriptiveStatistic;
+import com.moscona.util.ExceptionHelper;
 import com.moscona.util.SafeRunnable;
+import com.moscona.util.async.AsyncFunctionCall;
 import com.moscona.util.async.AsyncFunctionFutureResults;
 import com.moscona.exceptions.InvalidArgumentException;
 import com.moscona.exceptions.InvalidStateException;
@@ -18,20 +20,21 @@ import com.moscona.util.TimeHelper;
 import com.moscona.util.collections.Pair;
 import com.moscona.util.monitoring.MemoryStateHistory;
 import com.moscona.util.monitoring.stats.IStatsService;
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.time.DateUtils;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.PrintWriter;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -39,7 +42,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * Created by Arnon on 5/8/2014.
  * Derived from code from another project.
  */
-public class DtnIqfeedHistoricalClient implements IDtnIQFeedClient {
+public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
     /**
      * **************************************************************************************************************
      * IMPORTANT: A recipe for writing a sync lookup requests (like getMinuteBars()):
@@ -79,7 +82,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedClient {
     public static final int HANDLER_TICKS_TO_SECOND_BARS = 2; // handler ID for the data handler for second bars request
     public static final int HANDLER_DAY_BARS = 3; // handler ID for the data handler for day bars request
 
-    public static final String NAME = "IQFeed";
+    public static final String NAME = "IQFeedHistorical";
 
     private IDtnIQFeedFacade facade = null;
     private boolean initialized = false;
@@ -596,6 +599,271 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedClient {
         }
     }
 
+    //<editor-fold desc="IHistoricalDataSource methods">
+
+    @Override
+    public String getName() throws InvalidStateException {
+        return NAME;
+    }
+
+    @Override
+    /**
+     * Given a symbol and a splits DB - queries the data source and updates the splits DB with the latest available
+     * information about splits for this symbol
+     *
+     * @param symbol
+     * @param splits
+     */
+    public void updateSplitsFor(String symbol, SplitsDb splits, int timeout, TimeUnit timeoutUnit) throws InvalidArgumentException, InvalidStateException, TimeoutException, MissingSymbolException {
+        // FIXME Splits should be expressed by an interface rather than a concrete class
+        Fundamentals fundamentals = getFundamentalsDataFor(symbol, timeout, timeoutUnit);
+        if (fundamentals.hasSplitFactor1()) {
+            // IMPORTANT: IQFeed gives only 2 digit ratios. This requires aggressive correction of the common 1/3 and 2/3 multiples
+            double ratio = fixSplitRatio(fixSplitRatio(fundamentals.getSplitFactor1factor(), 3, 0.11f), 100, 0.0001f);
+            splits.add(fundamentals.getSplitFactor1date(), symbol, ratio, null, ratio > 0.0);
+        }
+        if (fundamentals.hasSplitFactor2()) {
+            // IMPORTANT: IQFeed gives only 2 digit ratios. This requires aggressive correction of the common 1/3 and 2/3 multiples
+            double ratio = fixSplitRatio(fixSplitRatio(fundamentals.getSplitFactor2factor(), 3, 0.11f), 100, 0.0001f);
+            splits.add(fundamentals.getSplitFactor2date(), symbol, ratio, null, ratio > 0.0);
+        }
+    }
+
+    private double fixSplitRatio(double ratio, int multiple, float roundingError) {
+        double trippleRatio = multiple * ratio;
+        if (Math.abs(Math.round(trippleRatio) - trippleRatio) < roundingError) {
+            return ((double) Math.round(trippleRatio)) / multiple;
+        }
+        return ratio;
+    }
+
+    /**
+     * Gets the fundamental data for a specific symbol.
+     * This is done somewhat similar to the lookup interface (sync call over an async medium) but the big difference is
+     * that the fundamentals are transmitted over the level1 streaming data, and not always when we request them.
+     * Also, there is no request/response tagging mechanism in the protocol for the level1 streaming data, whereas
+     * in the lookup port everything can be tagged ans so we can have a close to generic handling of call/response in
+     * the lookup side while this requires a somewhat different handling, unfortunately.
+     * @param symbol
+     * @param timeout
+     * @param unit
+     * @return
+     * @throws com.moscona.exceptions.InvalidStateException
+     */
+    private Fundamentals getFundamentalsDataFor(String symbol, int timeout, TimeUnit unit) throws InvalidStateException {
+        // FIXME should consider making this a public (interface) method
+        AsyncFunctionFutureResults<Fundamentals> pending = getFundamentalsDataPendingCalls();
+        AsyncFunctionCall<Fundamentals> fundamentalsCall = new FundamentalsDataFacadeCall(symbol).use(pending);
+
+        try {
+            Fundamentals retval = fundamentalsCall.call(timeout, unit);
+            return retval;
+        } catch (Exception e) {
+            throw new InvalidStateException("Exception while trying to get fundamentals data for " + symbol, e);
+        }
+    }
+
+    @Override
+    /**
+     * Gets a minute chart for the symbol, possibly with some values missing.
+     * Note that the from and to times must both be from the same day, or an exception might be thrown.
+     *
+     * @param symbol  the symbol for which historic data is requested
+     * @param from    the starting time (the beginning of this minute is the beginning of the first minute to be retrieved)
+     * @param to      the ending time (the end of this minute is the end of the last minute to be retrieved)
+     * @param timeout the maximum time allowed to spend on this operation
+     * @param unit    the units for the timeout
+     * @param retryLimit the maximum number of allowed retry attempt on errors that justify a retry
+     * @return a SymbolChart with the historic data in the time period. Some slots may be null
+     * @throws com.moscona.exceptions.InvalidArgumentException
+     *
+     * @throws com.moscona.exceptions.InvalidStateException
+     *
+     * @throws java.util.concurrent.TimeoutException
+     *
+     * @throws com.intellitrade.exceptions.MissingSymbolException
+     *
+     */
+    public SymbolChart getMinuteBars(String symbol, Calendar from, Calendar to, int timeout, TimeUnit unit, int retryLimit) throws InvalidArgumentException, InvalidStateException, TimeoutException, MissingSymbolException {
+        // when you send a HIT request on the lookup port you get data from the minute starting at the start
+        //   * if you request "HIT,INTC,60,20100708 093000,20100708 201000,,,,1,Partial day minutes: INTC"
+        //     then the first response will be 2010-07-08 09:31:00
+        //   * the last bar will be either the last one available (that had data) or the END of the minute requested
+        //     so if the to is "20100708 094000"
+        //     then the last point will be "2010-07-08 09:41:00"
+
+        // calculate boundary times
+        int requestStarted = TimeHelper.now();
+
+        Calendar start = (Calendar) from.clone();
+        Calendar end = (Calendar) to.clone();
+        end.set(Calendar.SECOND, 0);
+        end.set(Calendar.MILLISECOND, 0);
+        end.add(Calendar.MINUTE, -1);
+
+        String startString = toIqFeedTimestamp(start);
+        String endString = toIqFeedTimestamp(end);
+
+        AsyncFunctionFutureResults<List<TimeSlotBarWithTimeStamp>> pending = getBarsRequestPendingCalls();
+        int remainingAttempts = retryLimit + 1;
+        List<TimeSlotBarWithTimeStamp> answer = null;
+
+        do {
+            remainingAttempts--;
+            String tag = "getMinuteBars(" + symbol + ") " + new Date().getTime();
+            tagToHandlerIdMap.put(tag, HANDLER_MINUTE_BARS); // control data routing in the onLookupData method
+
+            AsyncFunctionCall<List<TimeSlotBarWithTimeStamp>> minutesBarCall = new MinutesBarCall(symbol, startString, endString, tag).use(pending);
+            answer = null;
+
+            try {
+                answer = minutesBarCall.call(timeout, unit);
+                logSymbolTiming(symbol, requestStarted, "getMinuteBars/minutesBarCall", null);
+            } catch (IQFeedError e) {
+                handleLookupIQFeedError(e, symbol, requestStarted, "getMinuteBars/minutesBarCall", "IQFeedError while trying to get minute data for " + symbol + ": " + e);
+            } catch (Exception e) {
+                Throwable iqFeedError = ExceptionHelper.fishOutOf(e, IQFeedError.class, 20);
+                if (iqFeedError != null) {
+                    handleLookupIQFeedError((IQFeedError) iqFeedError, symbol, requestStarted, "getMinuteBars/minutesBarCall", "IQFeedError while trying to get minute data for " + symbol + ": " + e);
+                } else {
+                    logSymbolTiming(symbol, requestStarted, "getMinuteBars/minutesBarCall", e);
+                    throw new InvalidStateException("Exception while trying to get minute data for " + symbol + " with timeout " + timeout + " " + unit + ": " + e, e);
+                }
+            } finally {
+                tagToHandlerIdMap.remove(tag); // this tag is unique(ish) and is for one time use
+            }
+        } while (remainingAttempts > 0 && answer == null);
+
+        // verify the return value
+        long expectedCount = (to.getTimeInMillis() - from.getTimeInMillis()) / MILLIS_PER_MINUTE;
+        if (expectedCount < answer.size()) {
+            String firstBar = null;
+            String lastBar = null;
+            if (answer.size() > 0) {
+                TimeSlotBarWithTimeStamp first = answer.get(0);
+                if (first != null) {
+                    firstBar = first.toString();
+                }
+
+                TimeSlotBarWithTimeStamp last = answer.get(answer.size() - 1);
+                if (last != null) {
+                    lastBar = last.toString();
+                }
+            }
+            InvalidStateException e = new InvalidStateException("getMinuteBars(): Got an answer with the wrong number of bars. Expected " + expectedCount +
+                    " but got " + answer.size() + " bars instead. " +
+                    "the first bar is " + firstBar + " and the last bar is " + lastBar);
+            logSymbolTiming(symbol, requestStarted, "getMinuteBars", e);
+            throw e;
+        }
+
+        // Convert the answer into a SymbolChart
+        SymbolChart retval = new SymbolChart(symbol,
+                TimeHelper.timeStampRelativeToMidnight(from),
+                TimeHelper.timeStampRelativeToMidnight(to), ONE_MINUTE_IN_MILLIS);
+
+        // we may not have gotten an answer for every minute
+        fillChartFromBars(answer, retval, 0);
+
+        return retval;
+    }
+
+    @Override
+    /**
+     * Gets a second chart for the symbol, possibly with some values missing.
+     * Note that the from and to times must both be from the same day, or an exception might be thrown.
+     *
+     * @param symbol  the symbol for which historic data is requested
+     * @param from    the starting time (the beginning of this second is the beginning of the first second to be retrieved)
+     * @param to      the ending time (the beginning of this second is the end of the last second to be retrieved)
+     * @param timeout the maximum time allowed to spend on this operation
+     * @param unit    the units for the timeout
+     * @param retryLimit the maximum number of allowed retry attempt on errors that justify a retry
+     * @return a SymbolChart with the historic data in the time period. Some slots may be null
+     * @throws com.moscona.exceptions.InvalidArgumentException
+     *
+     * @throws com.moscona.exceptions.InvalidStateException
+     *
+     * @throws java.util.concurrent.TimeoutException
+     *
+     * @throws com.intellitrade.exceptions.MissingSymbolException
+     *
+     */
+    public SymbolChart getSecondBars(String symbol, Calendar from, Calendar to, int timeout, TimeUnit unit, int retryLimit) throws InvalidArgumentException, InvalidStateException, TimeoutException, MissingSymbolException {
+        // The code for this method is almost identical to getMinuteBars() - the main difference is in the handler
+        int requestStarted = TimeHelper.now();
+
+        String startString = toIqFeedTimestamp(from);
+        Calendar requestTo = (Calendar) to.clone();
+        requestTo.add(Calendar.SECOND, -1);
+        String endString = toIqFeedTimestamp(requestTo);
+
+        AsyncFunctionFutureResults<List<TimeSlotBarWithTimeStamp>> pending = getBarsRequestPendingCalls();
+        List<TimeSlotBarWithTimeStamp> answer = null;
+        int remainingAttempts = retryLimit + 1;
+
+        do {
+            remainingAttempts--;
+            String tag = "getSecondBars(" + symbol + ") " + new Date().getTime();
+            try {
+                tagToHandlerIdMap.put(tag, HANDLER_TICKS_TO_SECOND_BARS); // control data routing in the onLookupData method
+                AsyncFunctionCall<List<TimeSlotBarWithTimeStamp>> secondsBarCall = new SecondsBarCall(symbol, startString, endString, tag).use(pending);
+                answer = secondsBarCall.call(timeout, unit);
+                logSymbolTiming(symbol, requestStarted, "getSecondBars/secondsBarCall", null);
+            } catch (IQFeedError e) {
+                handleLookupIQFeedError(e, symbol, requestStarted, "getSecondBars/secondsBarCall", "IQFeedError while trying to get second data for " + symbol + ": " + e);
+            } catch (Exception e) {
+                Throwable iqFeedError = ExceptionHelper.fishOutOf(e, IQFeedError.class, 20);
+                if (iqFeedError != null) {
+                    handleLookupIQFeedError((IQFeedError) iqFeedError, symbol, requestStarted, "getSecondBars/secondsBarCall", "IQFeedError while trying to get second data for " + symbol + ": " + e);
+                } else {
+                    logSymbolTiming(symbol, requestStarted, "getSecondBars/secondsBarCall", e);
+                    throw new InvalidStateException("Exception while trying to get second data for " + symbol + " with timeout " + timeout + " " + unit + ": " + e, e);
+                }
+            } finally {
+                tagToHandlerIdMap.remove(tag); // this tag is unique(ish) and is for one time use
+            }
+        } while (remainingAttempts > 0 && answer == null);
+
+        // verify the return value
+        long expectedCount = 1 + (to.getTimeInMillis() - from.getTimeInMillis()) / 1000;
+        if (expectedCount < answer.size()) {
+            String firstBar = null;
+            String lastBar = null;
+            if (answer.size() > 0) {
+                TimeSlotBarWithTimeStamp first = answer.get(0);
+                if (first != null) {
+                    firstBar = first.toString();
+                }
+
+                TimeSlotBarWithTimeStamp last = answer.get(answer.size() - 1);
+                if (last != null) {
+                    lastBar = last.toString();
+                }
+            }
+            InvalidStateException e = new InvalidStateException("getSecondBars(): Got an answer with the wrong number of bars. Expected " + expectedCount +
+                    " but got " + answer.size() + " bars instead. " +
+                    "the first bar is " + firstBar + " and the last bar is " + lastBar);
+            logSymbolTiming(symbol, requestStarted, "getSecondBars", e);
+            throw e;
+        }
+
+        // Convert the answer into a SymbolChart
+        int oneSecond = 1000;
+        SymbolChart retval = new SymbolChart(symbol,
+                TimeHelper.timeStampRelativeToMidnight(from),
+                TimeHelper.timeStampRelativeToMidnight(to), oneSecond);
+
+        int remaining = retval.capacity();
+        fillChartFromBars(answer, retval, 0);
+
+
+        return retval;
+    }
+
+
+    //</editor-fold>
+
 
     // ==============================================================================================================
     // Lookup handling
@@ -910,8 +1178,25 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedClient {
     }
 
     private int toCents(float price) {
-            return Math.round(price*100.0f);
+        return Math.round(price * 100.0f);
+    }
+
+    /**
+     * Helper function to factor common code of potentially retriable errors
+     *
+     * @param e
+     * @param symbol
+     * @param requestStarted
+     * @param logTag
+     * @param msg
+     * @throws InvalidStateException
+     */
+    private void handleLookupIQFeedError(IQFeedError e, String symbol, int requestStarted, String logTag, String msg) throws InvalidStateException {
+        logSymbolTiming(symbol, requestStarted, logTag, e);
+        if (!e.isRetriable()) {
+            throw new InvalidStateException(msg, e);
         }
+    }
 
     //</editor-fold>
 
@@ -919,6 +1204,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedClient {
     // Private methods
     // ==============================================================================================================
 
+    //<editor-fold desc="misc private methods">
     /**
      * Send an alert using the alert service for the parser service bundle
      * @param message
@@ -929,6 +1215,80 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedClient {
         if (debugFlag) {
             //System.err.println("Alert: "+message);
         }
+    }
+
+    private void logSymbolTiming(String symbol, int requestStarted, String context, Exception e) {
+        try {
+            synchronized (this) {
+                if (timingLogFile == null) {
+                    String logFileLocation = config.getStreamDataStoreRoot() + "/symbolTimingLog.txt";  // FIXME replace with proper injector of a proper logger
+                    FileUtils.touch(new File(logFileLocation));
+                    //noinspection IOResourceOpenedButNotSafelyClosed
+                    timingLogFile = new PrintWriter(new FileOutputStream(logFileLocation, true), true);
+                }
+            }
+            StringBuilder msg = new StringBuilder();
+            String delimiter = ";";
+            msg.append(symbol).append(delimiter);
+            msg.append(context).append(delimiter);
+            msg.append(TimeHelper.now() - requestStarted).append(delimiter);
+            if (e == null) {
+                msg.append("OK");
+            } else {
+                String filename = "";
+                int lineNo = -1;
+                String methodName = "";
+                StackTraceElement[] stackTrace = e.getStackTrace();
+                if (stackTrace != null && stackTrace.length > 0 && stackTrace[0] != null) {
+                    filename = stackTrace[0].getFileName();
+                    lineNo = stackTrace[0].getLineNumber();
+                    methodName = stackTrace[0].getMethodName();
+                }
+                msg.append(e.getClass().getName()).append(delimiter).append(filename).append(delimiter)
+                        .append(lineNo).append(delimiter).append(methodName).append("();")
+                        .append(e.toString().replaceAll(delimiter, ":"));
+            }
+            synchronized (this) {
+                timingLogFile.println(msg);
+            }
+        } catch (Exception e1) {
+            sendLookupAlert("Error while logging timing: " + e1, "Logging error");
+        }
+    }
+
+    /**
+     * Converts a calendar to an IQFeed timestamp "yyyyMMdd hhmmss"
+     * @param cal
+     * @return
+     */
+    private String toIqFeedTimestamp(Calendar cal) {
+        StringBuilder retval = new StringBuilder();
+
+        retval.append(cal.get(Calendar.YEAR));
+        retval.append(StringUtils.leftPad(Integer.toString(cal.get(Calendar.MONTH) + 1), 2, '0'));
+        retval.append(StringUtils.leftPad(Integer.toString(cal.get(Calendar.DAY_OF_MONTH)), 2, '0'));
+        retval.append(" ");
+        retval.append(StringUtils.leftPad(Integer.toString(cal.get(Calendar.HOUR_OF_DAY)), 2, '0'));
+        retval.append(StringUtils.leftPad(Integer.toString(cal.get(Calendar.MINUTE)), 2, '0'));
+        retval.append(StringUtils.leftPad(Integer.toString(cal.get(Calendar.SECOND)), 2, '0'));
+
+        return retval.toString();
+    }
+
+    /**
+     * Converts a calendar to an IQFeed timestamp "yyyyMMdd hhmmss"
+     *
+     * @param cal
+     * @return
+     */
+    private String toIqFeedDate(Calendar cal) {
+        StringBuilder retval = new StringBuilder();
+
+        retval.append(cal.get(Calendar.YEAR));
+        retval.append(StringUtils.leftPad(Integer.toString(cal.get(Calendar.MONTH) + 1), 2, '0'));
+        retval.append(StringUtils.leftPad(Integer.toString(cal.get(Calendar.DAY_OF_MONTH)), 2, '0'));
+
+        return retval.toString();
     }
 
     private void sampleMemory(long indicator) {
@@ -1049,6 +1409,33 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedClient {
             throw new InvalidStateException("Timed out while waiting for connection confirmation from the IQFeed facade");
         }
     }
+
+    private void fillChartFromBars(List<TimeSlotBarWithTimeStamp> answer, SymbolChart retval, int indexOffset) throws InvalidArgumentException {
+        // now, the trick is that you may not get bars for every period, so you must be careful about which bars are for which period
+        int currentBarIndex = 0;
+        int currentTimestamp = retval.getStartTimeStamp();
+        for (int i = 0; i < retval.capacity(); i++, currentTimestamp += retval.getGranularityMillis()) {
+            if (answer.size() > currentBarIndex) {
+                TimeSlotBarWithTimeStamp bar = answer.get(currentBarIndex);
+                int currentBarTimestamp = TimeHelper.convertToInternalTs(bar.getTimestamp(), true) + indexOffset * retval.getGranularityMillis();
+                if (currentTimestamp / retval.getGranularityMillis() == currentBarTimestamp / retval.getGranularityMillis()) {
+                    // both are the same period
+                    retval.setBar(bar, i); // put it in the result
+                    currentBarIndex++; // advance to the next candidate
+                }
+            }
+        }
+    }
+
+    /**
+     * for testability only
+     * @param facade
+     */
+    public void setFacade(IDtnIQFeedFacade facade) {
+        // FIXME should use a better dependency injection
+        this.facade = facade;
+    }
+    //</editor-fold>
 
     //<editor-fold desc="Raw message handling">
     /**
@@ -1635,6 +2022,170 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedClient {
 
         public boolean isRetriable() {
             return isRetriable;
+        }
+    }
+
+    protected class DayBarCall extends AsyncFunctionCall<List<TimeSlotBarWithTimeStamp>> {
+        // FIXME Refactor to use a more pluggable model
+        private String symbol;
+        private String tag;
+        private String from;
+        private String to;
+
+        protected DayBarCall(String symbol, String from, String to, String tag) {
+            this.symbol = symbol;
+            this.from = from;
+            this.to = to;
+            this.tag = tag;
+        }
+
+        /**
+         * Performs the asynchronous call (the "body" of the function). If you need argument (as you probably do) then
+         * they should be in the constructor.
+         *
+         * @throws Exception
+         */
+        @Override
+        protected void asyncCall() throws Exception {
+            facade.sendDayDataRequest(symbol, from, to, tag);
+        }
+
+        /**
+         * Computes the argument signature to use for call equivalence. If multiple calls are made withe the same
+         * argument signature, they are coalesced into one. If there is already a pending call with the same signature
+         * then no additional calls to asyncCall will be made, rather the call will simply share the future result with
+         * the other calls.
+         *
+         * @return the arguments signature to identify equivalent calls
+         */
+        @Override
+        protected String computeArgumentsSignature() {
+            return tag;
+        }
+    }
+
+    protected class MinutesBarCall extends AsyncFunctionCall<List<TimeSlotBarWithTimeStamp>> {
+              // FIXME Refactor to use a more pluggable model
+        private String symbol;
+        private String tag;
+        private String from;
+        private String to;
+
+        protected MinutesBarCall(String symbol, String from, String to, String tag) {
+            this.symbol = symbol;
+            this.from = from;
+            this.to = to;
+            this.tag = tag;
+        }
+
+        /**
+         * Performs the asynchronous call (the "body" of the function). If you need argument (as you probably do) then
+         * they should be in the constructor.
+         *
+         * @throws Exception
+         */
+        @Override
+        protected void asyncCall() throws Exception {
+            facade.sendMinuteDataRequest(symbol, from, to, tag);
+        }
+
+        /**
+         * Computes the argument signature to use for call equivalence. If multiple calls are made withe the same
+         * argument signature, they are coalesced into one. If there is already a pending call with the same signature
+         * then no additional calls to asyncCall will be made, rather the call will simply share the future result with
+         * the other calls.
+         *
+         * @return the arguments signature to identify equivalent calls
+         */
+        @Override
+        protected String computeArgumentsSignature() {
+            return tag;
+        }
+    }
+
+    /**
+     * The async call for the seconds bar request. the main difference between this and MinutesBarCall is tha the
+     * asyncCall here requests ticks from the facade rather than minutes (IQFeed does not do second level granularity)
+     */
+    protected class SecondsBarCall extends AsyncFunctionCall<List<TimeSlotBarWithTimeStamp>> {
+               // FIXME Refactor to use a more pluggable model
+        private String symbol;
+        private String tag;
+        private String from;
+        private String to;
+
+        protected SecondsBarCall(String symbol, String from, String to, String tag) {
+            this.symbol = symbol;
+            this.from = from;
+            this.to = to;
+            this.tag = tag;
+        }
+
+        /**
+         * Performs the asynchronous call (the "body" of the function). If you need argument (as you probably do) then
+         * they should be in the constructor.
+         *
+         * @throws Exception
+         */
+        @Override
+        protected void asyncCall() throws Exception {
+            facade.sendTickDataRequest(symbol, from, to, tag);
+        }
+
+        /**
+         * Computes the argument signature to use for call equivalence. If multiple calls are made withe the same
+         * argument signature, they are coalesced into one. If there is already a pending call with the same signature
+         * then no additional calls to asyncCall will be made, rather the call will simply share the future result with
+         * the other calls.
+         *
+         * @return the arguments signature to identify equivalent calls
+         */
+        @Override
+        protected String computeArgumentsSignature() {
+            return tag;
+        }
+    }
+
+    protected class FundamentalsDataFacadeCall extends AsyncFunctionCall<Fundamentals> {
+        private String symbol;
+
+        protected FundamentalsDataFacadeCall(String symbol) {
+            this.symbol = symbol;
+        }
+
+        /**
+         * Performs the asynchronous call (the "body" of the function). If you need argument (as you probably do) then
+         * they should be in the constructor.
+         *
+         * @throws Exception
+         */
+        @Override
+        protected void asyncCall() throws Exception {
+            fundamentalsRequested.set(true);
+            facade.sendGetFundamentalsRequest(symbol);
+        }
+
+        /**
+         * Computes the argument signature to use for call equivalence. If multiple calls are made withe the same
+         * argument signature, they are coalesced into one. If there is already a pending call with the same signature
+         * then no additional calls to asyncCall will be made, rather the call will simply share the future result with
+         * the other calls.
+         *
+         * @return the arguments signature to identify equivalent calls
+         */
+        @Override
+        protected String computeArgumentsSignature() {
+            return symbol;
+        }
+
+        @Override
+        public Fundamentals call() throws Exception {
+            Fundamentals retval = super.call();
+            if (!facade.isWatching(symbol)) {
+                // remove the temporary watch
+                facade.stopWatchingSymbol(symbol);
+            }
+            return retval;
         }
     }
 }

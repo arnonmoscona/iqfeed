@@ -58,7 +58,7 @@ public class DtnIQFeedFacade implements IDtnIQFeedFacade {
 
     @SuppressWarnings({"FieldCanBeLocal"})
     private IDtnIQFeedConfig config = null;
-    private IDtnIQFeedClient client=null;
+    private IDtnIQFeedHistoricalClient client=null;
     private Process iqConnect=null;
     private String subscriberLogin=null;
     private String subscriberPassword=null;
@@ -155,7 +155,7 @@ public class DtnIQFeedFacade implements IDtnIQFeedFacade {
      * @param client
      */
     @Override
-    public void setClient(IDtnIQFeedClient client) {
+    public void setClient(IDtnIQFeedHistoricalClient client) {
         this.client = client;
     }
 

@@ -2,13 +2,14 @@ package com.moscona.trading.adapters.iqfeed;
 
 
 import com.moscona.trading.IConfigInitializable;
+import com.moscona.trading.adapters.IHistoricalDataSource;
 
 /**
  * Created: May 12, 2010 2:43:32 PM
  * By: Arnon Moscona
  * An interface that defines the behavior of the client that the facade interface depends on (event callbacks for the most part).
  */
-public interface IDtnIQFeedClient extends IConfigInitializable<IDtnIQFeedConfig> {
+public interface IDtnIQFeedHistoricalClient extends IConfigInitializable<IDtnIQFeedConfig>, IHistoricalDataSource {
     /**
      * Called when the facade completed the connection setup and is ready to receive commands
      */
