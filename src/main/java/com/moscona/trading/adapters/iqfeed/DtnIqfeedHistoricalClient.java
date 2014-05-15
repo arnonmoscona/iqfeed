@@ -6,6 +6,7 @@ import com.moscona.trading.IServicesBundle;
 import com.moscona.trading.adapters.DataSourceCoreStats;
 import com.moscona.trading.elements.SymbolChart;
 import com.moscona.trading.excptions.MissingSymbolException;
+import com.moscona.trading.formats.deprecated.MarketTree;
 import com.moscona.trading.persistence.SplitsDb;
 import com.moscona.trading.streaming.HeavyTickStreamRecord;
 import com.moscona.util.ExceptionHelper;
@@ -26,6 +27,7 @@ import org.apache.commons.lang3.time.DateUtils;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.PrintWriter;
 import java.text.SimpleDateFormat;
 import java.util.*;
@@ -223,7 +225,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
         this.config = config;
         try {
 //            debug("initialization","started");
-            Map myConfig = (Map)config.getComponentConfigFor("DtnIQFeedClient");
+            Map myConfig = (Map)config.getComponentConfigFor("DtnIqfeedHistoricalClient");
             defaultServiceBundle = config.getServicesBundle();
             parserDaemonServiceBundle = config.createServicesBundle();
             lookupThreadServiceBundle = config.createServicesBundle();
@@ -271,9 +273,19 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
 //            debug("Exception", "ClassCastException "+e);
             throw new InvalidArgumentException("error while initializing IQFeed client: "+e, e);
         } catch (Throwable e) {
-//            debug("Exception", e.getClass().getName()+" "+e);
+//            debug("Exception", e.getClass().getName()+" "+e, e);
             throw new InvalidStateException("error while initializing IQFeed client: "+e, e);
         }
+    }
+
+    private void debug(String title, String s, Throwable e) {
+        System.err.println("______________________________________________________________________");
+        System.err.println("DEBUG: "+title+"\n\n");
+        System.err.println(s);
+        if (e!=null) {
+            e.printStackTrace(System.err);
+        }
+        System.err.println("\n\n______________________________________________________________________\n\n");
     }
 
     /**
@@ -302,7 +314,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
      *
      * @throws com.moscona.exceptions.InvalidStateException
      */
-    private void onHeartBeat() throws InvalidStateException {
+    private void onHeartBeat() throws InvalidStateException, InvalidArgumentException {
         //autoStartTradingDay();
         monitorRawMessageQueueSize(rawMessageQueueSize.get());
         //monitorForHiccups();
@@ -318,7 +330,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
         //FIXME implement DtnIQFeedClient.monitorRawMessageQueueSize
     }
 
-    private void collectStatsCounters() throws InvalidStateException {
+    private void collectStatsCounters() throws InvalidStateException, InvalidArgumentException {
         final IStatsService stats = getHeartBeatServicesBundle().getStatsService();
         String prefix = "IQFeed client ";
         stats.setStat(prefix + "rawMessageQueueSize", rawMessageQueueSize.get());
@@ -404,7 +416,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
 //        }
     }
 
-    protected void publishStatsUpdate() {
+    protected void publishStatsUpdate() throws InvalidStateException, InvalidArgumentException {
         int now = TimeHelper.now();
         int publishInterval = now - lastPublishedStatsTimestamp.get();
         if (publishInterval >= 0 && publishInterval < MAX_STATS_PUBLIHING_FREQUENCY) {
@@ -488,6 +500,15 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
     public void onConnectionTerminated() {
         //fixme implement DtnIqfeedHistoricalClient.onConnectionTerminated()
     }
+
+    public boolean isConnected() {
+        return isConnected.get();
+    }
+
+    public boolean isShutdown() {
+        return isShutDown;
+    }
+
     //</editor-fold>
 
     @Override
@@ -563,7 +584,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
      *
      * @param rawMessages
      */
-    public void onLookupData(String rawMessages) {
+    public void onLookupData(String rawMessages) throws InvalidStateException, InvalidArgumentException {
         // at this point we basically have a list of tagged line (each line) which all need to be added to their
         // pending lists until we see a line with tag,!ENDMSG! - at which point we need to route the whole list to its
         // handler and remove it from pending
@@ -864,6 +885,212 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
 
     //</editor-fold>
 
+    //<editor-fold desc="market tree data">
+
+    // FIXME the whole set of market tree data methods should go away and be replaced by daily bars methods
+    /**
+     * Gets the a daily quote (close time) at the date passed for a symbol with all the information required for the
+     * market tree.
+     * IMPORTANT: this data comes as-is from IQFeed, which is split-adjusted to the present.
+     * IMPORTANT: when this method fetches data for the past (older than yesterday) it does *not* pull fundamentals, therefore *not* giving data that comed from the IQFeed fundamentals
+     *
+     * @param date the date for which the market tree build is needed
+     * @param symbol the symbol the query is for
+     * @param timeout
+     * @param unit
+     * @return a MarketTreeBar (specialized version of Bar)
+     * @throws com.moscona.exceptions.InvalidArgumentException
+     *          if the symbol does not exist or is not quotable
+     * @throws com.moscona.exceptions.InvalidStateException
+     *          if there were other problems
+     * @throws java.util.concurrent.TimeoutException
+     */
+    public MarketTree.TreeEntry getMarketTreeDataFor(Calendar date, String symbol, int timeout, TimeUnit unit) throws InvalidArgumentException, InvalidStateException, TimeoutException {
+        int retryLimit = 3;
+        Calendar yesterday = (Calendar) TimeHelper.nowAsCalendar().clone();
+        yesterday.add(Calendar.HOUR, -24);
+        if (TimeHelper.isSameDay(date) || TimeHelper.isSameDay(date, yesterday)) {
+            // this is the "old" method - getting data from fundamentals
+            return getMarketTreeDataForToday(symbol, timeout, unit);
+        }
+
+        Calendar oneYearBefore = (Calendar) date.clone();
+        oneYearBefore.add(Calendar.YEAR, -1);
+        String from = toIqFeedDate(oneYearBefore);
+        String to = toIqFeedDate(date);
+
+        AsyncFunctionFutureResults<List<TimeSlotBarWithTimeStamp>> pending = getBarsRequestPendingCalls();
+        int remainingAttempts = retryLimit + 1;
+        List<TimeSlotBarWithTimeStamp> answer = null;
+
+        do {
+            remainingAttempts--;
+            String tag = "getDayBars(" + symbol + ") " + from + "-" + to + " " + new Date().getTime();
+            tagToHandlerIdMap.put(tag, HANDLER_DAY_BARS); // control data routing in the onLookupData method
+
+            AsyncFunctionCall<List<TimeSlotBarWithTimeStamp>> dayBarCall = new DayBarCall(symbol, from, to, tag).use(pending);
+            answer = null;
+            int requestStarted = TimeHelper.now();
+
+            try {
+                answer = dayBarCall.call(timeout, unit);
+            } catch (IQFeedError e) {
+                boolean shouldRetry = e.isRetriable && remainingAttempts > 0;
+                if (!shouldRetry) {
+                    throw new InvalidStateException("IQFeedError while trying to get one year of day data for " + symbol + ": " + e, e);
+                } else {
+                    config.getAlertService().sendAlert("Retrying after IQFeedError while trying to get one year of day data for " + symbol + ": " + e + " (remaining attempts: " + remainingAttempts + ")");
+                }
+            } catch (Exception e) {
+                Throwable iqFeedError = ExceptionHelper.fishOutOf(e, IQFeedError.class, 20);
+                if (iqFeedError != null) {
+                    throw new InvalidStateException("IQFeedError while trying to get one year of day data for " + symbol + ": " + iqFeedError, iqFeedError);
+                } else {
+                    throw new InvalidStateException("Exception while trying to get one year of day data for " + symbol + " with timeout " + timeout + " " + unit + ": " + e, e);
+                }
+            } finally {
+                tagToHandlerIdMap.remove(tag); // this tag is unique(ish) and is for one time use
+            }
+        } while (remainingAttempts > 0 && answer == null);
+
+        // don't know how many we get. Some symbols are new and don't have a lot of history
+        if (answer.size() < 1) {
+            throw new InvalidStateException("Got too few responses for one year of day bars for " + symbol + ": " + answer.size());
+        }
+
+        TimeSlotBarWithTimeStamp lastResponse = answer.get(answer.size() - 1);
+
+        // verify that first and last are within 5 days from requested boundaries
+        // IMPORTANT: Again because symbols can start or stop trading anywhere in the year - this check does not make sense
+        //        String errStr = "response to a one year request is too far away from the requested date of ";
+        //        if (Math.abs(TimeHelper.daysDiff(oneYearBefore, answer.get(0).getTimestamp())) > 5) {
+        //            throw new InvalidStateException("The first " + errStr + TimeHelper.toDayStringMmDdYyyy(oneYearBefore));
+        //        }
+        //        if(Math.abs(TimeHelper.daysDiff(date, lastResponse.getTimestamp())) > 5) {
+        //            throw new InvalidStateException("The last " + errStr + TimeHelper.toDayStringMmDdYyyy(date));
+        //        }
+
+        // calculate 52 week high, 52 week low
+        float yearHigh = lastResponse.getClose();
+        float yearLow = lastResponse.getClose();
+        for (TimeSlotBarWithTimeStamp bar : answer) {
+            if (TimeHelper.isDayWithinRange(bar.getTimestamp(), oneYearBefore, date)) {
+                float close = bar.getClose();
+                yearHigh = Math.max(yearHigh, close);
+                yearLow = Math.min(yearLow, close);
+            }
+        }
+
+        // calculate average daily volume going one month back
+        long cumulativeVolume = 0;
+        int days = 0;
+        Calendar oneMontheBefore = (Calendar) date.clone();
+        oneMontheBefore.add(Calendar.MONTH, -1);
+        for (TimeSlotBarWithTimeStamp bar : answer) {
+            if (TimeHelper.isDayWithinRange(bar.getTimestamp(), oneMontheBefore, date)) {
+                cumulativeVolume += bar.getVolume();
+                days++;
+            }
+        }
+        long dailyAverageVolume = (days > 0) ? cumulativeVolume / days : 0;
+
+        // calculate close
+        // create a market tree entry
+        MarketTree.TreeEntry entry = new MarketTree().newTreeEntry();
+        entry.setName(symbol);
+        entry.setAverageDailyVolume(dailyAverageVolume);
+        entry.setClass1("value");
+        entry.setPrevClose(lastResponse.getClose());
+        entry.setYearHigh(yearHigh);
+        entry.setYearLow(yearLow);
+
+        // return it
+        return entry;
+    }
+
+    /**
+     * Gets the latest available daily quote (close time) for a symbol with all the information required for the
+     * market tree.
+     *
+     * @param symbol the symbol the query is for
+     * @param timeout
+     * @param unit
+     * @return a MarketTreeBar (specialized version of Bar)
+     * @throws com.moscona.exceptions.InvalidArgumentException
+     *          if the symbol does not exist or is not quotable
+     * @throws com.moscona.exceptions.InvalidStateException
+     *          if there were other problems
+     */
+    public MarketTree.TreeEntry getMarketTreeDataFor(String symbol, int timeout, TimeUnit unit) throws InvalidArgumentException, InvalidStateException, TimeoutException {
+        return getMarketTreeDataForToday(symbol, timeout, unit);
+    }
+
+    public MarketTree.TreeEntry getMarketTreeDataForToday(String symbol, int timeout, TimeUnit unit) throws InvalidArgumentException, InvalidStateException, TimeoutException {
+        int requestStarted = TimeHelper.now();
+        MarketTree.TreeEntry entry = new MarketTree().newTreeEntry(); // changed in response to weird compiler error in TeamCity
+        long started = System.currentTimeMillis();
+
+        // get last daily close data
+        Bar bar = getLastCloseWithThirtyDayAvgVolume(symbol, timeout, unit);
+        logSymbolTiming(symbol, requestStarted, "getMarketTreeDataFor/getLastCloseWithThirtyDayAvgVolume", null);
+
+        long remaining = unit.toMillis(timeout) - (System.currentTimeMillis() - started);
+        if (remaining <= 0) {
+            throw new TimeoutException("Timeout while getting market tree data for " + symbol);
+        }
+        // get fundamentals data
+        Fundamentals fundamentals = getFundamentalsDataFor(symbol, (int) remaining, TimeUnit.MILLISECONDS);
+        logSymbolTiming(symbol, requestStarted, "getMarketTreeDataFor/getFundamentalsDataFor", null);
+
+        // fill out row and return
+        entry.setPrevClose(bar.getClose());
+        entry.setYearHigh(fundamentals.getYearHigh());
+        entry.setYearLow(fundamentals.getYearLow());
+        entry.setName(symbol);
+        // the actual entry we have is not from the market tree and its type has not been determined
+        // moreover, in this context it may not yet be in the market tree at all.
+        int entryType = config.getMasterTree().get(symbol).getType();
+        if (entryType == MarketTree.TreeEntry.STOCK) {
+            // the following do not apply for INDEX nodes
+            entry.setAverageDailyVolume(fundamentals.getAverageVolume());
+            entry.setMarketCap(fundamentals.getCommonShares() * bar.getClose());
+            entry.setShares(fundamentals.getCommonShares());
+        }
+
+        // find the last split info
+        Pair<Calendar, Float> lastSplit = fundamentals.getLastSplit();
+        if (lastSplit != null) {
+            HashMap<String, Object> decorations = entry.getDecorations();
+            decorations.put("lastSplitDate", lastSplit.getFirst());       // Related to call to com.intellitrade.server.tasks.DailyActivities.fixStockCounts()
+            decorations.put("lastSplitRatio", lastSplit.getSecond());
+        }
+        return entry;
+    }
+
+    private Bar getLastCloseWithThirtyDayAvgVolume(String symbol, long timeout, TimeUnit unit) throws InvalidStateException {
+        AsyncFunctionFutureResults<Bar> pending = getDailyDataPendingCalls();
+        String tag = TAG_PREFIX_31_DAY + symbol;
+        tagToHandlerIdMap.put(tag, HANDLER_31_DAY_BARS); // control data routing in the onLookupData method
+        AsyncFunctionCall<Bar> dailyDataCall = new DailyDataFacadeCall(symbol, tag).use(pending);
+        try {
+            Bar retval = dailyDataCall.call(timeout, unit);
+            return retval;
+        } catch (Exception e) {
+            throw new InvalidStateException("Exception while trying to get daily data for " + symbol + " with timeout " + timeout + " " + unit, e);
+        }
+    }
+
+    private synchronized AsyncFunctionFutureResults<Bar> getDailyDataPendingCalls() {
+        if (dailyDataPendingCalls == null) {
+            dailyDataPendingCalls = new AsyncFunctionFutureResults<Bar>();
+        }
+        return dailyDataPendingCalls;
+    }
+
+
+
+    //</editor-fold>
+
 
     // ==============================================================================================================
     // Lookup handling
@@ -871,7 +1098,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
 
     //<editor-fold desc="Lookup handling">
 
-    private void removeFromPendingAndHandle(String tag, ArrayList<String[]> list) {
+    private void removeFromPendingAndHandle(String tag, ArrayList<String[]> list) throws InvalidStateException, InvalidArgumentException {
         long start = System.currentTimeMillis();
         getBarsRequestPendingCalls().markLastByteTimeStamp(tag);
         getBarsRequestPendingCalls().setDataSize(tag, list.size());
@@ -1080,7 +1307,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
      * @param list
      */
     @SuppressWarnings({"ThrowableInstanceNeverThrown"})
-    private void handleTicksToSecondBars(ArrayList<String[]> list) {
+    private void handleTicksToSecondBars(ArrayList<String[]> list) throws InvalidStateException, InvalidArgumentException {
         // FIXME This should be factored out as a part of a pluggable add-on
         if (list.size() == 0) {
             return; // nothing to do and don't know how to tell any pending call
@@ -1386,7 +1613,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
         SafeRunnable runnable = new SafeRunnable() {
             @Override
             public void runWithPossibleExceptions() throws Exception {
-                if (config.simpleComponentConfigEntryWithOverride("DtnIQFeedClient", "mode", "dtnIQFeedClientMode").equals("passive")) {
+                if (config.simpleComponentConfigEntryWithOverride("DtnIqfeedHistoricalClient", "mode", "dtnIQFeedClientMode").equals("passive")) {
                     config.getAlertService().sendAlert("STARTING IN PASSIVE MODE");
                     facade.startIQConnectPassive();
                 } else {
@@ -1698,7 +1925,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
         } else if (fields[1].equals("WATCHES")) {
             //onWatchesMessage(fields); // verify that the watch list matches the market tree
         } else if (fields[1].equals("CUST")) {
-            //onCustMessage(fields); // verify that the watch list matches the market tree
+            onCustMessage(fields); // verify that the watch list matches the market tree
         } else {
             delegateSystemMessageToFacade(fields);
         }
@@ -1744,6 +1971,14 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
         }
     }
 
+
+    private void onCustMessage(String[] fields) {
+        String delayed = fields[2];
+        if (!delayed.equals("real_time")) {
+            sendParserAlert("getting delayed data instead of real time. Marking feed as unconnected.", null);
+            isConnected.set(false);
+        }
+    }
 
     /**
      * Called when we get a "S,STATS,..." message
@@ -1832,7 +2067,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
         return fundamentals.get(symbol);
     }
 
-    public IServicesBundle getHeartBeatServicesBundle() throws InvalidStateException {
+    public IServicesBundle getHeartBeatServicesBundle() throws InvalidStateException, InvalidArgumentException {
         if (heartBeatServicesBundle == null) {
             heartBeatServicesBundle = config.createServicesBundle();
         }
@@ -2188,4 +2423,40 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
             return retval;
         }
     }
+
+    protected class DailyDataFacadeCall extends AsyncFunctionCall<Bar> {
+        String symbol;
+        String tag;
+
+        protected DailyDataFacadeCall(String symbol, String tag) {
+            this.symbol = symbol;
+            this.tag = tag;
+        }
+
+        /**
+         * Performs the asynchronous call (the "body" of the function). If you need argument (as you probably do) then
+         * they should be in the constructor.
+         *
+         * @throws Exception
+         */
+        @Override
+        protected void asyncCall() throws Exception {
+            facade.sendGetDailyDataRequest(tag, symbol, 31); // answered in handle31DayBars()
+        }
+
+        /**
+         * Computes the argument signature to use for call equivalence. If multiple calls are made withe the same
+         * argument signature, they are coalesced into one. If there is already a pending call with the same signature
+         * then no additional calls to asyncCall will be made, rather the call will simply share the future result with
+         * the other calls.
+         *
+         * @return the arguments signature to identify equivalent calls
+         */
+        @Override
+        protected String computeArgumentsSignature() {
+            return tag;
+        }
+    }
+
+
 }

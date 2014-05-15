@@ -1,6 +1,8 @@
 package com.moscona.trading.adapters.iqfeed;
 
 
+import com.moscona.exceptions.InvalidArgumentException;
+import com.moscona.exceptions.InvalidStateException;
 import com.moscona.trading.IConfigInitializable;
 import com.moscona.trading.adapters.IHistoricalDataSource;
 
@@ -55,5 +57,5 @@ public interface IDtnIQFeedHistoricalClient extends IConfigInitializable<IDtnIQF
      * A callback for the facade to notify the client about new data received on the lookup port
      * @param rawMessages
      */
-    void onLookupData(String rawMessages);
+    void onLookupData(String rawMessages) throws InvalidStateException, InvalidArgumentException;
 }

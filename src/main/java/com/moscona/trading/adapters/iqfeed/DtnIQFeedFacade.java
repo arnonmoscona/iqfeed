@@ -137,7 +137,7 @@ public class DtnIQFeedFacade implements IDtnIQFeedFacade {
     }
 
     @Handler(delivery = Invoke.Asynchronously)
-    public void handleApplicationStartEvent(BeforeApplicationStartEvent event) {
+    public void handleApplicationStartEvent(BeforeApplicationStartEvent event) throws InvalidStateException, InvalidArgumentException {
         if (getIqConnectDead()) {
             try {
                 startIQConnect();
@@ -246,7 +246,7 @@ public class DtnIQFeedFacade implements IDtnIQFeedFacade {
         //FIXME implement DtnIQFeedFacade.switchToActiveMode
     }
 
-    private synchronized void killAllIqConnectSystemProcesses() throws InvalidStateException, InterruptedException {
+    private synchronized void killAllIqConnectSystemProcesses() throws InvalidStateException, InterruptedException, InvalidArgumentException {
         TaskList taskList = new TaskList();
         List<TaskList.TaskInfo> tasks = taskList.listTasks(IQCONNECT_EXE);
         IAlertService alertService = config.getServicesBundle().getAlertService();
@@ -289,7 +289,11 @@ public class DtnIQFeedFacade implements IDtnIQFeedFacade {
                     isIqConnectDead.set(true);
                     onIqConnectDeath();
                 } catch(InterruptedException e) {
-                    config.getAlertService().sendAlert("Interrupted while waiting for IQConnect to die - killing it");
+                    try {
+                        config.getAlertService().sendAlert("Interrupted while waiting for IQConnect to die - killing it");
+                    } catch (InvalidStateException | InvalidArgumentException e1) {
+                        // ignore
+                    }
                     try {
                         stopIQConnect();
                     } catch(InvalidStateException e1) {
@@ -308,11 +312,19 @@ public class DtnIQFeedFacade implements IDtnIQFeedFacade {
                         // we did not kill the guys. We need to restart it and notify everybody that we had this problem
                         String message = "IQConnect seems to have died unexpectedly! Attempting a restart";
                         //noinspection ThrowableInstanceNeverThrown
-                        config.getAlertService().sendAlert(message, new InvalidStateException(message));
+                        try {
+                            config.getAlertService().sendAlert(message, new InvalidStateException(message));
+                        } catch (InvalidStateException | InvalidArgumentException e) {
+                            // ignore
+                        }
                         try {
                             startIQConnect();
                         } catch (InvalidStateException e) {
-                            config.getAlertService().sendAlert("Exception while trying to restart IQConnect",e);
+                            try {
+                                config.getAlertService().sendAlert("Exception while trying to restart IQConnect",e);
+                            } catch (InvalidStateException | InvalidArgumentException e1) {
+                                // ignore
+                            }
                         }
                     }
                 } finally {
@@ -404,12 +416,16 @@ public class DtnIQFeedFacade implements IDtnIQFeedFacade {
      */
     private void log(String message) {
         // todo logging should be delegated to the client (and probably routed to the GUI somehow) - or maybe publish an event via the event publisher
-        System.out.println(message); // FIXME DELETE THIS LINE!!!
-        if (config!= null) {
-            IAlertService alerts = config.getAlertService();
-            if (alerts != null) {
-                alerts.sendAlert(message);
+        try {
+            if (config!= null) {
+                IAlertService alerts = config.getAlertService();
+                if (alerts != null) {
+                    alerts.sendAlert(message);
+                }
             }
+        } catch (InvalidStateException |InvalidArgumentException e) {
+            System.err.println("Failed to log: "+message);
+            e.printStackTrace();
         }
     }
 

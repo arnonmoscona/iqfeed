@@ -1,0 +1,133 @@
+--- !!com.moscona.trading.adapters.iqfeed.IqFeedConfig
+# ------------------------------------------------------------------------------
+# MAIN LOOP CONFIGURATION
+# ------------------------------------------------------------------------------
+
+# How much time to allow for the entire set of tick consumer to read
+# minimum 20
+maxTickConsumerCycleTimeMillis: 50
+# How much time to allow per iteration before checking for stop commands and other events
+# must be greater than maxTickConsumerCycleTimeMillis
+maxIterationCycleTime: 100
+# the tick buffer size for use in the main loop (number of ticks)
+bufferSize: 20000
+# The number of milliseconds of the age of the data read from the real time data soure that will trigger alerts
+staleDataThresholdMillis: 500
+
+# ------------------------------------------------------------------------------
+# CONSUMERS
+# ------------------------------------------------------------------------------
+
+tickConsumers:
+    - !!com.intellitrade.server.consumers.LoadableOneSecondBarsTickConsumer  # see componentConfig for listenerI wiring
+
+
+# A number of milliseconds by which the one second consumer considers observes ticks to be stale and
+# issues an alert. If this is zero or less the feature is turned off
+oneSecondConsumerStaleDataThreshold: 500
+# The full (or relative) path of the root directory of the stream data store
+streamDataStoreRoot: "#ProjectRoot{}/target/tmp"
+# Denotes that maximum number of files that is allowed on disk by the real time stream writer.
+# Non positive values mean no limit.
+realTimeMaxFiles: 2000
+
+# for listeners that are thrown in the background we havean intermediate queue serving as a buffer
+# capacity of this queue (2 should be sufficient 99.9% of the time)
+concurrentTimeSlotCloseListenerMaxCapacity: 100
+# the frequency it is polled (determines shutdown event response time)
+concurrentTimeSlotCloseListenerPollTimeoutMillis: 10
+
+# the stream writer classes used here - governs the writing of the stream descriptor
+streamWriters:
+    - com.intellitrade.formats.SnapShotWriter
+
+# ------------------------------------------------------------------------------
+# BUSINESS RULES
+# ------------------------------------------------------------------------------
+
+#A time string representing the time when trading starts. Example: "09:30"
+startTradingTimeStr: "09:30"
+# A time string representing the time when trading ends. Example: "16:00"
+endTradingTimeStr: "16:00:01"
+
+# Periodic task execution schedule this are done on system local time, not EST!
+dailyTasksExecutionTimeStr: "01:00"
+
+# Daily backfill schedule (LOCAL TIME)
+# The time that the daily local store backfill starts, soon after market close
+dailyBackfillStartTimeString: "13:10"
+# The maximum time of day to allow a backfill task to start (close to midnight) to allow plenty of time before the
+# market tree update (which will restart the server and kill all tasks)
+dailyBackfillMaxStartTimeString: "23:59"
+# The maximum historical look-back for second level data (determined by IQFeed availability of tick level data)
+dailyBackfillMaxLookBackDays: 29
+
+# Intraday backfill defaults
+idbRetryLimit: 3
+idbPerSymbolRetryLimit: 3
+idbAllowedFailedSymbolsPercent: 2
+idbOverallTimeoutSeconds: 90
+
+# Snapshot gap fill defaults
+sgfRetryLimit: 3
+sgfPerSymbolRetryLimit: 3
+sgfAllowedFailedSymbolsPercent: 2
+sgfOverallTimeoutSeconds: 90
+
+
+# ------------------------------------------------------------------------------
+# RESOURCES
+# ------------------------------------------------------------------------------
+
+# full path of market tree (must be present and loadable)
+marketTreePath: "#ProjectRoot{}/src/test/fixtures/market_tree.csv"
+
+
+
+# ------------------------------------------------------------------------------
+# PLUGIN CLASSES
+# ------------------------------------------------------------------------------
+
+# fully qualified class name of the stats service to use - must be in classpath
+# and implements IStatsService
+statsServiceClassName: "com.moscona.util.monitoring.stats.SimpleStatsService"
+# fully qualified class name of the alert service to use - must be in classpath
+# and implements IAlertService
+alertServiceClassName: "com.intellitrade.server.LoggingAlertService"
+# A factory for making MainLoop objects
+mainLoopFactoryClassName: "com.intellitrade.server.core.MainLoopFactory"
+
+pluginComponents:
+    # fully qualified class name of the real time source to use - must be in classpath
+    # and implements IRealTimeDataSource
+    realTimeSource: com.intellitrade.simulation.TickStreamSimulator  # com.intellitrade.server.adapters.iqfeed.DtnIQFeedClient
+    serverToClientMessenger: com.intellitrade.server.ServerToClientMessenger
+    clientToServerMessenger: com.intellitrade.server.ClientMessageReceiver
+    localStore: com.intellitrade.formats.LocalStore
+    #dailyDataSource: TBD
+
+# ------------------------------------------------------------------------------
+# PLUGIN CONFIG
+# ------------------------------------------------------------------------------
+
+componentConfig:
+    OneSecondBarsTickConsumer:
+        listeners:
+            - listenerClassName: "com.intellitrade.server.consumers.RealTimeSnapShotCloseListener"
+              background: true
+            - listenerClassName: "com.intellitrade.server.consumers.SnapShotCloseListener"
+              background: true
+    TickStreamSimulator:
+        dataPath: "#ProjectRoot{}/src/test/fixtures/1sec_data"
+    LoggingAlertService:
+        logFile: "#SystemProperty{user.home}/intellitrade_alerts.log" # bogus, for testing only
+        append: false
+    DtnIqfeedHistoricalClient:
+        IDtnIQFeedFacadeImplementationClassName: "com.intellitrade.server.adapters.iqfeed.DtnIQFeedFacade"
+        preTradingMonitoringStartMinutes: 2
+        connectionTimeoutMillis: 30000 # controls initial connection to IQConnect after launch, not real time connection
+        maxMillisBetweenTicks: 500 # issue a "IQFeed hiccup" alert if no trades detected withing time frame (roughly - based on heartbeat)
+    ServerToClientMessenger:
+        messageDir: "#streamDataStoreRoot{}/../serverToClientMessages"
+    ClientMessageReceiver:
+        messageDir: "#streamDataStoreRoot{}/../clientToServerMessages"

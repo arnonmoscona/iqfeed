@@ -2,6 +2,10 @@ package com.moscona.test.easyb
 
 import com.moscona.exceptions.InvalidArgumentException
 import com.moscona.test.util.TestResourceHelper
+import com.moscona.trading.adapters.iqfeed.DtnIQFeedFacade
+import com.moscona.trading.adapters.iqfeed.UserOverrides
+import com.moscona.trading.formats.deprecated.MarketTree
+import com.moscona.trading.formats.deprecated.MasterTree
 import com.moscona.trading.persistence.SplitsDb
 import org.apache.commons.io.FileUtils
 import org.apache.commons.lang3.StringUtils
@@ -17,7 +21,7 @@ import org.apache.commons.lang3.StringUtils
  */
 
 class TestHelper {
-  public static final URL ANCHOR_URL = SplitsDb.class.getResource("."); // FIXME Not only I need a copy, I also have to modify it UGH!
+  public static final URL ANCHOR_URL = DtnIQFeedFacade.class.getResource("."); // FIXME Not only I need a copy, I also have to modify it UGH!
   private static TestResourceHelper testResourceHelper = null;
 
   static getTestResourceHelper() {
@@ -171,6 +175,12 @@ class TestHelper {
       System.err.println("Exception: $e")
       //e.printStackTrace(System.err)
       printFilteredStackTrace(e)
+      if (e.cause != null) {
+        println "."*80
+        println "Caused by $e.cause"
+        println "."*80
+        printFilteredStackTrace("$e.cause")
+      }
       println "!"*80
       throw e
     }
@@ -184,7 +194,7 @@ class TestHelper {
     def err = System.err
     err.println t.toString()
     t.getStackTrace().each {
-      if(it.className =~ /intellitrade/) {
+      if(it.className =~ /moscona/) {
         err.println "    at $it"
       }
       else if(it.className =~ /dataSpace/) {
@@ -320,5 +330,32 @@ class TestHelper {
       }
     }
     matrix
+  }
+
+  static loadMarketTreeFixture(master = "market_tree.csv", working = "market_tree.csv") {
+    String fixture_file = copyFromMaster(master, working)
+    def valid_tree = null;
+    printExceptions {
+      valid_tree = new MarketTree().load(fixture_file)
+    }
+    valid_tree
+  }
+
+  static loadMasterTreeFixture(master = "master_tree.csv", working = "master_tree.csv") {
+    String fixture_file = copyFromMaster(master, working)
+    def valid_tree = null;
+    printExceptions {
+      valid_tree = new MasterTree().load(fixture_file)
+    }
+    valid_tree
+  }
+
+  static reasonableUserOverrides() {
+    return new UserOverrides(
+        marketTreePath: "${fixtures()}/market_tree.csv",
+        tickStreamSimulatorDataPath: "${fixtures()}/1sec_data",
+        loggingAlertServiceLogFile: "#SystemProperty{user.home}/intellitrade_alerts.log",
+        streamDataStoreRoot: tmpDir()
+    )
   }
 }

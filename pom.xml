@@ -27,6 +27,36 @@
             <scope>test</scope>
         </dependency>
 
+        <dependency>  <!-- FIXME should be replaced by jMockit, probably-->
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-all</artifactId>
+            <version>1.8.5</version>
+            <!--<scope>test</scope> see easyb for why this is disabled, should be marked test if resolved. -->
+        </dependency>
+
+        <dependency>
+            <groupId>com.google.code</groupId>
+            <artifactId>jconch</artifactId>
+            <version>1.3</version>
+            <!-- Took 1.3 from repository smokejumperit-->
+            <scope>compile</scope>
+            <optional>true</optional>
+            <exclusions>
+                <exclusion> <!-- This was including groovy 1.7.0, preventing it -->
+                    <groupId>org.codehaus.groovy</groupId>
+                    <artifactId>groovy</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.google.collections</groupId>
+                    <artifactId>google-collections</artifactId>
+                </exclusion>
+                <exclusion>
+                    <artifactId>commons-lang</artifactId>
+                    <groupId>commons-lang</groupId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
         <dependency>
             <groupId>com.moscona.common</groupId>
             <artifactId>trading</artifactId>
@@ -117,4 +147,11 @@
             </plugin>
         </plugins>
     </build>
+
+    <repositories>
+        <repository> <!-- Used for jconch -->
+            <id>smokejumperit</id>
+            <url>http://repo.smokejumperit.com</url>
+        </repository>
+    </repositories>
 </project>
