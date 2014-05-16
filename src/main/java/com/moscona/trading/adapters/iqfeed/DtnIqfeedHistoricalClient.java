@@ -66,6 +66,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
      * Future implementation note: could simplify the whole thing by using something like Apache Camel...
      * ***************************************************************************************************************
      */
+      //<editor-fold desc="Constants">
 
     public static final int HEARTBEAT_SLEEP_MILLIS = 100;
     public static final int ONE_MINUTE_IN_MILLIS = 60000;
@@ -85,14 +86,16 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
     public static final int HANDLER_DAY_BARS = 3; // handler ID for the data handler for day bars request
 
     public static final String NAME = "IQFeedHistorical";
+    //</editor-fold>
 
+    //<editor-fold desc="private fields">
     private IDtnIQFeedFacade facade = null;
     private boolean initialized = false;
     private boolean isShutDown = false;
 
     private AtomicBoolean daemonsShouldBeRunning;
+    @SuppressWarnings("FieldCanBeLocal")
     private Thread heartBeatThread = null; // guarantees some code gets executed at a regular frequency
-    private AtomicBoolean isWatchingSymbols;
 
     private int initialConnectionTimeoutMillis;
     private final ReentrantLock facadeInitializationTimeoutLock;
@@ -104,11 +107,9 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
     private ConcurrentHashMap<String, Integer> fieldPositions;
     private ConcurrentHashMap<String, Map> fundamentals;
     private ConcurrentHashMap<String, Integer> fundamentalFieldPositions;
-    private final ReentrantLock blockingWaitLock;         // lock for the following condition
 
     private AtomicInteger rawMessageQueueSize;                    // counting so that we don't have to call size() on the queue
     private LinkedBlockingQueue<MessageQueueItem<String>> rawMessageQueue;          // raw data without pre-processing as it came from the facade
-    private final Condition blockingWaitNewDataAvailable; // condition that there is new data available
     private AtomicInteger blockingWaitCounter;            // counts how many times we had blocking waits requested
 
     private IDtnIQFeedConfig config = null;
@@ -135,31 +136,8 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
 
     private PrintWriter timingLogFile = null;
 
-    // staleness stats
-//    public static final int BOUNDARY_LATENCY_ALERT_LIMIT = 300;
-//    public static final String IQFEED_LATENCY = "IQFeed latency";
-//    private static final int STALE_THRESHOLD_ON_TICK_PROCESSING = 500;
-//
-//    public static final String STAT_DESCRIPTIVE_STALE_AGE = "staleAge";
-//    public static final String STAT_DESCRIPTIVE_OUT_OF_ORDER_AGE = "outOfOrderAge";
-//    public static final String STAT_TOTAL_STALE_TICKS = "totalStaleTicks";
-//    public static final String STAT_LAST_STALE_TICK_AGE = "lastStaleTickAge";
-//    public static final String STAT_TOTAL_OUT_OF_ORDER_NOT_CONVERTED = "totalOutOfOrderNotConverted";
-//    public static final String STAT_TOTAL_OUT_OF_ORDER_CONVERTED = "totalOutOfOrderConverted";
-//    public static final int MAX_STATS_PUBLIHING_FREQUENCY = 1000; // msec no more frequent than that
-
-    private int timeMessageRecievedAt = 0;
-    private long timeMessageCount = 0;
-    //private final Object staleStatsMonitor = new Object();
-    //private AtomicLong totalTicks = new AtomicLong(0); // not using stats service due to high frequency
-    //private AtomicLong lastTickLatency = new AtomicLong(0); // not using stats service due to high frequency
 
     private AtomicInteger lastPublishedStatsTimestamp = new AtomicInteger(0);
-//    private String lastStaleTickSymbol = "";
-//    private String lastOutOfOrderTickSymbol = "";
-//    private Calendar lastHiccupTimeStamp = null;
-//    private int lastHiccupDuration = 0;
-//    private Calendar lastStaleTickTimeStamp = null;
 
     private long lastMemStatsSampleTs = 0;
     public static final long MEMORY_SAMPLE_MIN_INTERVAL = 1000; // 1 second
@@ -171,41 +149,27 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
     private float currentInternetBandwidthConsumption;
     private float currentLocalBandwidthConsumption;
 
-
-//    private StaleTickLogger staleTickLogger;
+     //</editor-fold>
 
     public DtnIqfeedHistoricalClient() {
-        timeMessageRecievedAt = TimeHelper.now() - TimeHelper.now() % 1000;
         daemonsShouldBeRunning = new AtomicBoolean(true);
-        isWatchingSymbols = new AtomicBoolean(false);
         facadeInitializationTimeoutLock = new ReentrantLock();
         connectionConfirmedCondition = facadeInitializationTimeoutLock.newCondition();
         connectionConfirmed = new AtomicBoolean(false);
         isConnected = new AtomicBoolean(false);
 
-        rawMessageQueue = new LinkedBlockingQueue<MessageQueueItem<String>>();
+        rawMessageQueue = new LinkedBlockingQueue<>();
         rawMessageQueueSize = new AtomicInteger(0);
 
-//        tickQueue = new ConcurrentLinkedQueue<RealTimeTradeRecord>();
-//        tickQueueSize = new AtomicInteger(0);
-        fieldPositions = new ConcurrentHashMap<String, Integer>();
-//        tradeTickCounter = new AtomicInteger(0);
-//        nonTradeTickCounter = new AtomicInteger(0);
+        fieldPositions = new ConcurrentHashMap<>();
 
-        fundamentalFieldPositions = new ConcurrentHashMap<String, Integer>();
-        fundamentals = new ConcurrentHashMap<String, Map>();
+        fundamentalFieldPositions = new ConcurrentHashMap<>();
+        fundamentals = new ConcurrentHashMap<>();
 
-        blockingWaitLock = new ReentrantLock();
-        blockingWaitNewDataAvailable = blockingWaitLock.newCondition();
         blockingWaitCounter = new AtomicInteger(0);
 
-//        maxMillisBetweenTicks = DEFAULT_HICCUP_INTERVAL_MILLIS;
-//        lastObservedTickTs = new AtomicInteger(-1); // not yet observed  (used only for hiccup detection - not time stamping)
-//
-//        maxObservedTickTimestamp = new AtomicInteger(-1); // not observed
-
-        tagToHandlerIdMap = new ConcurrentHashMap<String, Integer>();
-        pendingLookupData = new ConcurrentHashMap<String, ArrayList<String[]>>();
+        tagToHandlerIdMap = new ConcurrentHashMap<>();
+        pendingLookupData = new ConcurrentHashMap<>();
         fundamentalsRequested = new AtomicBoolean(false);
     }
 
@@ -224,69 +188,43 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
     public void init(IDtnIQFeedConfig config) throws InvalidArgumentException, InvalidStateException {
         this.config = config;
         try {
-//            debug("initialization","started");
             Map myConfig = (Map)config.getComponentConfigFor("DtnIqfeedHistoricalClient");
             defaultServiceBundle = config.getServicesBundle();
             parserDaemonServiceBundle = config.createServicesBundle();
             lookupThreadServiceBundle = config.createServicesBundle();
-
-//            preTradingMonitoringStartMillis = (Integer)myConfig.get("preTradingMonitoringStartMinutes")* MILLIS_PER_MINUTE;
-//            TradingHours tradingHours = new TradingHours(config);
-//            startWatchingSymbolsTimestamp = tradingHours.getStartTradingTimeMillis() - preTradingMonitoringStartMillis;
-//            endTradingDayTimestamp = tradingHours.getEndTradingTimeMillis();
-
-//            maxMillisBetweenTicks = (Integer)myConfig.get("maxMillisBetweenTicks");
 
             initialConnectionTimeoutMillis = (Integer)myConfig.get("connectionTimeoutMillis");
             if (initialConnectionTimeoutMillis < 1) {
                 throw new InvalidArgumentException("The connectionTimeoutMillis parameter must be a positive integer");
             }
 
-//            marketTree = config.getMarketTree();
-//            if (marketTree==null) {
-//                throw new InvalidArgumentException("Market tree is required for the IQFeed client");
-//            }
-
             startMessageParserDaemon();
 
             initFacade(config, myConfig);
-
-//            config.getEventPublisher().onEvent(EventPublisher.Event.TRADING_CLOSED, new SafeRunnable() {
-//                @Override
-//                public void runWithPossibleExceptions() throws Exception {
-//                    stopWatchingSymbols();
-//                }
-//            }.setName("IQFeed stop watching symbols"));
 
             heartBeatServicesBundle = config.createServicesBundle();
             startHeartBeat();
             listenForStatsUpdateRequests();
 
-//            staleTickLogger = new StaleTickLogger(config);
-
             initialized = true;
-//            debug("initialization","complete");
         } catch (NumberFormatException e) {
-//            debug("Exception", "NumberFormatException "+e);
             throw new InvalidArgumentException("error while initializing IQFeed client: "+e, e);
         } catch (ClassCastException e) {
-//            debug("Exception", "ClassCastException "+e);
             throw new InvalidArgumentException("error while initializing IQFeed client: "+e, e);
         } catch (Throwable e) {
-//            debug("Exception", e.getClass().getName()+" "+e, e);
             throw new InvalidStateException("error while initializing IQFeed client: "+e, e);
         }
     }
 
-    private void debug(String title, String s, Throwable e) {
-        System.err.println("______________________________________________________________________");
-        System.err.println("DEBUG: "+title+"\n\n");
-        System.err.println(s);
-        if (e!=null) {
-            e.printStackTrace(System.err);
-        }
-        System.err.println("\n\n______________________________________________________________________\n\n");
-    }
+//    private void debug(String title, String s, Throwable e) {
+//        System.err.println("______________________________________________________________________");
+//        System.err.println("DEBUG: "+title+"\n\n");
+//        System.err.println(s);
+//        if (e!=null) {
+//            e.printStackTrace(System.err);
+//        }
+//        System.err.println("\n\n______________________________________________________________________\n\n");
+//    }
 
     /**
      * Starts the heartbeat thread
@@ -315,9 +253,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
      * @throws com.moscona.exceptions.InvalidStateException
      */
     private void onHeartBeat() throws InvalidStateException, InvalidArgumentException {
-        //autoStartTradingDay();
         monitorRawMessageQueueSize(rawMessageQueueSize.get());
-        //monitorForHiccups();
         collectStatsCounters();
     }
 
@@ -334,33 +270,9 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
         final IStatsService stats = getHeartBeatServicesBundle().getStatsService();
         String prefix = "IQFeed client ";
         stats.setStat(prefix + "rawMessageQueueSize", rawMessageQueueSize.get());
-//        stats.setStat(prefix + "tickQueueSize", tickQueueSize.get());
         stats.setStat(prefix + "blockingWaitCounter", blockingWaitCounter.get());
-//        stats.setStat(prefix + "tradeTickCounter", tradeTickCounter.get());
-//        stats.setStat(prefix + "nonTradeTickCounter", nonTradeTickCounter.get());
-//        stats.setStat(prefix + "lastObservedTickTs", lastObservedTickTs.get());
-//        stats.setStat(prefix + "maxObservedTickTimestamp", maxObservedTickTimestamp.get());
         stats.setStat(prefix + "currentLocalBandwidthConsumption", currentLocalBandwidthConsumption);
         stats.setStat(prefix + "currentInternetBandwidthConsumption", currentInternetBandwidthConsumption);
-//        synchronized (staleStatsMonitor) {
-//            IStatsService parserStats = parserDaemonServiceBundle.getStatsService();
-//            prefix += "staleness ";
-//            stats.setStat(prefix + "staleTickCounter", parserStats.getStat(STAT_TOTAL_STALE_TICKS).getLong());
-//            stats.setStat(prefix + "staleTickLastAge", parserStats.getStat(STAT_LAST_STALE_TICK_AGE).getLong());
-//            ISimpleDescriptiveStatistic desc = parserStats.getStat(STAT_DESCRIPTIVE_STALE_AGE).getDescriptiveStatistics();
-//            stats.setStat(prefix + "staleTickAverageAge", desc.average());
-//            stats.setStat(prefix + "staleTickMaxAge", desc.max());
-//            stats.setStat(prefix + "staleTickMinAge", desc.min());
-//            stats.setStat(prefix + "staleTickStdevAge", desc.stdev());
-//
-//            stats.setStat(prefix + "outOfOrderTickCounter", parserStats.getStat(STAT_TOTAL_OUT_OF_ORDER_NOT_CONVERTED).getLong());
-//            stats.setStat(prefix + "outOfOrderTicksCurried", parserStats.getStat(STAT_TOTAL_OUT_OF_ORDER_CONVERTED).getLong());
-//            desc = parserStats.getStat(STAT_DESCRIPTIVE_OUT_OF_ORDER_AGE).getDescriptiveStatistics();
-//            stats.setStat(prefix + "outOfOrderTickAverageAge", desc.average());
-//            stats.setStat(prefix + "outOfOrderTickMaxAge", desc.max());
-//            stats.setStat(prefix + "outOfOrderTickMinAge", desc.min());
-//            stats.setStat(prefix + "outOfOrderTickStdevAge", desc.stdev());
-//        }
     }
 
     private void listenForStatsUpdateRequests() {
@@ -371,22 +283,15 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
             }
         }.setName("IQFeed stats update request listener"));
 
-        config.getEventPublisher().onEvent(EventPublisher.Event.STALE_STATS_RESET_REQUEST, new SafeRunnable() {
-            @Override
-            public void runWithPossibleExceptions() throws Exception {
-                resetStaleStats();
-            }
-        }.setName("IQFeed staleStats reset responder"));
-
-        config.getEventPublisher().onEvent(EventPublisher.Event.DUMP_MEMORY_TRACKER_REQUEST, new SafeRunnable() {
-            @Override
-            public void runWithPossibleExceptions() throws Exception {
-                dumpMemStats();
-            }
-        }.setName("IQFeed DUMP_MEMORY_TRACKER_REQUEST responder"));
+//        config.getEventPublisher().onEvent(EventPublisher.Event.DUMP_MEMORY_TRACKER_REQUEST, new SafeRunnable() {
+//            @Override
+//            public void runWithPossibleExceptions() throws Exception {
+//                dumpMemStats();
+//            }
+//        }.setName("IQFeed DUMP_MEMORY_TRACKER_REQUEST responder"));
     }
 
-    protected  void dumpMemStats() {
+//    protected  void dumpMemStats() {
 //        if (memStats == null) {
 //            return;
 //        }
@@ -400,21 +305,8 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
 //        } catch (Exception e) {
 //            config.getAlertService().sendAlert("Failed to dump memory stats in IQFeed adapeter: " + e, e);
 //        }
-    }
+//    }
 
-    protected void resetStaleStats() {
-//        synchronized (staleStatsMonitor) {
-//            IStatsService stats = parserDaemonServiceBundle.getStatsService();
-//            stats.initStatWithDescriptiveStats(STAT_DESCRIPTIVE_STALE_AGE, 0);
-//            stats.setStat(STAT_TOTAL_STALE_TICKS, 0);
-//            stats.setStat(STAT_LAST_STALE_TICK_AGE, 0);
-//            stats.setStat(STAT_TOTAL_OUT_OF_ORDER_NOT_CONVERTED, 0);
-//            stats.setStat(STAT_TOTAL_OUT_OF_ORDER_CONVERTED, 0);
-//            stats.initStatWithDescriptiveStats(STAT_DESCRIPTIVE_OUT_OF_ORDER_AGE, 0);
-//            lastStaleTickSymbol = "";
-//            lastOutOfOrderTickSymbol = "";
-//        }
-    }
 
     protected void publishStatsUpdate() throws InvalidStateException, InvalidArgumentException {
         int now = TimeHelper.now();
@@ -517,8 +409,9 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
      *
      * @param ex         the exception
      * @param wasHandled whether or not it was handled already
-     */ public void onException(Throwable ex, boolean wasHandled) {
-        //fixme implement DtnIqfeedHistoricalClient.onException()
+     */
+    public void onException(Throwable ex, boolean wasHandled) {
+        //fixme implement DtnIqfeedHistoricalClient.onException(): publish exception via MBassador
     }
 
     @Override
@@ -529,9 +422,8 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
      */
     public void onAdminData(String data) {
         sampleMemory(data.length());
-        //        debug("got data",data);
         rawMessageQueue.add(new MessageQueueItem<String>(data));
-        int queueSize = rawMessageQueueSize.incrementAndGet();
+        //int queueSize = rawMessageQueueSize.incrementAndGet();
         //        debug("queue size",""+queueSize);
     }
 
@@ -612,7 +504,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
             else {
                 // add to pending and continue
                 if (list==null) {
-                    list = new ArrayList<String[]>();
+                    list = new ArrayList<>();
                     pendingLookupData.put(tag,list);
                 }
                 list.add(fields);
@@ -1540,7 +1432,6 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
 
     private void startMessageParserDaemon() {
         Thread parserDaemon = new RealTimeProviderConnectionThread<>(() -> {
-            //                debug("message parse daemon","starting");
             boolean interrupted = false;
             while (daemonsShouldBeRunning.get() && !interrupted) {
                 try {
@@ -1702,16 +1593,16 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
                         break;
                     case 'Q':
                         if (message.endsWith("t,,")) {
-                            //onTradeQuoteMessage(fields);
+                            onTradeQuoteMessage(fields);
                         } else {
-                            //onNonTradeQuoteMessage(fields); // just in case we reach this my mistake or decide to handle bid/ask updates
+                            onNonTradeQuoteMessage(fields); // just in case we reach this my mistake or decide to handle bid/ask updates
                         }
                         break;
                     case 'F':
                         onFundamentalMessage(fields);
                         break;
                     case 'T':
-                        //onTimeStampMessage(fields);
+                        onTimeStampMessage(fields);
                         break;
                 }
             } catch (ArrayIndexOutOfBoundsException e) {
@@ -1735,6 +1626,20 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
         }
         return retval;
     }
+
+    //<editor-fold desc="level 1 data method (can be implemented by streaming support subclass)">
+    protected void onTimeStampMessage(String[] fields) {
+        // do nothing
+    }
+
+    protected void onNonTradeQuoteMessage(String[] fields) {
+        // do nothing
+    }
+
+    protected void onTradeQuoteMessage(String[] fields) {
+        // do nothing
+    }
+    //</editor-fold>
 
     /**
      * Called when the server sends us fundamentals
@@ -1895,6 +1800,11 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
         getFundamentalsDataPendingCalls().returnToCallers(symbol, result);
     }
 
+    // FIXME used only in unit test
+    public void setFundamentalsRequested(boolean value) {
+        fundamentalsRequested.set(value);
+    }
+
     /**
      * Called for all messages starting with "s,..." The field definitions may be found at <a
      * href="http://www.iqfeed.net/dev/api/docs/SystemMessages.cfm" target="_blank">the IQFeed developer site</a>
@@ -1988,7 +1898,6 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
     @SuppressWarnings({"MagicNumber"})
     private void onStatsMessage(String[] fields) {
         String status = fields[12];
-        //        debug("Stats status",status);
         if (status.equals("Not Connected") && isConnected.get()) {
             onConnectionLost();
             return;

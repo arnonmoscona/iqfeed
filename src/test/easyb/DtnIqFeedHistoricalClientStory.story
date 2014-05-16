@@ -338,99 +338,106 @@ scenario "server shutdown", {
   }
 }
 
-//scenario "starting to watch symbols when initialized within trading hours", {
-//  given "a fresh facade", {
-//    // need a separate facade so we don't get double method invocation counting on it
-//    facade2 = Mockito.mock(IDtnIQFeedFacade)
-//    config.componentConfig["DtnIqfeedHistoricalClient"]["IDtnIQFeedFacade"] = facade2
-//  }
-//  and "time helper in simulated mode, with the time at 11am", {
-//    mockTime = new MockTime(hour:11, increment:100, resetTimeHelper:true)
-//  }
-//  when "I create a new client", {
-//    client = new DtnIqfeedHistoricalClient()
-//    mockImmediateOnConnectionEstablished(facade2, client)
-//    shutdownList << client
-//    client.init(config)
-//    sleep(200) // let a couple of heartbeats pass
-//  }
-//  then "the facade should be instructed to start watching symbols for all market tree stocks", {
-//    Mockito.verify(facade2, Mockito.times(502)).startWatchingSymbol(Mockito.anyString())
-//  }
-//  and "the facade should get an onConnectionEstablished() call", {
-//    Mockito.verify(facade2, Mockito.times(1)).onConnectionEstablished()
-//  }
-//}
-//
-//scenario "not starting to watch symbols when initialized outside trading hours", {
-//  given "a fresh facade", {
-//    // need a separate facade so we don't get double method invocation counting on it
-//    facade2 = Mockito.mock(IDtnIQFeedFacade)
-//    config.componentConfig["DtnIqfeedHistoricalClient"]["IDtnIQFeedFacade"] = facade2
-//  }
-//  and "time helper in simulated mode, with the time at 11am", {
-//    mockTime = new MockTime(hour:8, increment:100, resetTimeHelper:true)
-//  }
-//  when "I create a new client", {
-//    client = new DtnIqfeedHistoricalClient()
-//    mockImmediateOnConnectionEstablished(facade2, client)
-//    shutdownList << client
-//    client.init(config)
-//  }
-//  then "the facade should be instructed to start watching symbols for all market tree stocks", {
-//    Mockito.verify(facade2, Mockito.times(0)).startWatchingSymbol(Mockito.anyString())
-//  }
-//}
-//
-//scenario "auto-starting to watch symbols when initialized before trading hours and the trading day is about to begin", {
-//  given "a fresh facade", {
-//    // need a separate facade so we don't get double method invocation counting on it
-//    facade2 = Mockito.mock(IDtnIQFeedFacade)
-//    config.componentConfig["DtnIqfeedHistoricalClient"]["IDtnIQFeedFacade"] = facade2
-//  }
-//  and "time helper in simulated mode, with the time at 11am", {
-//    mockTime = new MockTime(hour:11, increment:100, resetTimeHelper:true)
-//  }
-//  and "the configuration set to start trading at 11:01", {
-//    config.startTradingTimeStr = "11:01"
-//  }
-//  when "I create a new client", {
-//    client = new DtnIqfeedHistoricalClient()
-//    mockImmediateOnConnectionEstablished(facade2, client)
-//    shutdownList << client
-//    client.init(config)
-//  }
-//  and "I wait a bit", {
-//    Thread.sleep(500);
-//  }
-//  then "the facade should be instructed to start watching symbols for all market tree stocks", {
-//    Mockito.verify(facade2, Mockito.times(502)).startWatchingSymbol(Mockito.anyString())
-//  }
-//}
-//
-//scenario "stopping to watch symbols when the server publishes end of trading day", {
-//  given "a fresh facade", {
-//    // need a separate facade so we don't get double method invocation counting on it
-//    facade2 = Mockito.mock(IDtnIQFeedFacade)
-//    config.componentConfig["DtnIqfeedHistoricalClient"]["IDtnIQFeedFacade"] = facade2
-//  }
-//  and "time helper in simulated mode, with the time at 11am", {
-//    mockTime = new MockTime(hour:11, increment:100, resetTimeHelper:true)
-//  }
-//  when "I create a new client", {
-//    client = new DtnIqfeedHistoricalClient()
-//    mockImmediateOnConnectionEstablished(facade2, client)
-//    shutdownList << client
-//    client.init(config)
-//    sleep(200) // let a couple of heartbeats pass
-//  }
-//  and "subsequently publish a TRADING_CLOSED event", {
-//    config.eventPublisher.publish(EventPublisher.Event.TRADING_CLOSED)
-//  }
-//  then "the facade should be instructed to stop watching symbols for all market tree stocks", {
-//    Mockito.verify(facade2, Mockito.times(502)).stopWatchingSymbol(Mockito.anyString())
-//  }
-//}
+
+//====================================================================================================================
+// Removed streaming level 1 trade data tests
+/* The following were removed as they are only for real-time trade feeds. Out of scope for historical-only client
+scenario "starting to watch symbols when initialized within trading hours", {
+  given "a fresh facade", {
+    // need a separate facade so we don't get double method invocation counting on it
+    facade2 = Mockito.mock(IDtnIQFeedFacade)
+    config.componentConfig["DtnIqfeedHistoricalClient"]["IDtnIQFeedFacade"] = facade2
+  }
+  and "time helper in simulated mode, with the time at 11am", {
+    mockTime = new MockTime(hour:11, increment:100, resetTimeHelper:true)
+  }
+  when "I create a new client", {
+    client = new DtnIqfeedHistoricalClient()
+    mockImmediateOnConnectionEstablished(facade2, client)
+    shutdownList << client
+    client.init(config)
+    sleep(200) // let a couple of heartbeats pass
+  }
+  then "the facade should be instructed to start watching symbols for all market tree stocks", {
+    Mockito.verify(facade2, Mockito.times(502)).startWatchingSymbol(Mockito.anyString())
+  }
+  and "the facade should get an onConnectionEstablished() call", {
+    Mockito.verify(facade2, Mockito.times(1)).onConnectionEstablished()
+  }
+}
+
+scenario "not starting to watch symbols when initialized outside trading hours", {
+  given "a fresh facade", {
+    // need a separate facade so we don't get double method invocation counting on it
+    facade2 = Mockito.mock(IDtnIQFeedFacade)
+    config.componentConfig["DtnIqfeedHistoricalClient"]["IDtnIQFeedFacade"] = facade2
+  }
+  and "time helper in simulated mode, with the time at 11am", {
+    mockTime = new MockTime(hour:8, increment:100, resetTimeHelper:true)
+  }
+  when "I create a new client", {
+    client = new DtnIqfeedHistoricalClient()
+    mockImmediateOnConnectionEstablished(facade2, client)
+    shutdownList << client
+    client.init(config)
+  }
+  then "the facade should be instructed to start watching symbols for all market tree stocks", {
+    Mockito.verify(facade2, Mockito.times(0)).startWatchingSymbol(Mockito.anyString())
+  }
+}
+
+scenario "auto-starting to watch symbols when initialized before trading hours and the trading day is about to begin", {
+  given "a fresh facade", {
+    // need a separate facade so we don't get double method invocation counting on it
+    facade2 = Mockito.mock(IDtnIQFeedFacade)
+    config.componentConfig["DtnIqfeedHistoricalClient"]["IDtnIQFeedFacade"] = facade2
+  }
+  and "time helper in simulated mode, with the time at 11am", {
+    mockTime = new MockTime(hour:11, increment:100, resetTimeHelper:true)
+  }
+  and "the configuration set to start trading at 11:01", {
+    config.startTradingTimeStr = "11:01"
+  }
+  when "I create a new client", {
+    client = new DtnIqfeedHistoricalClient()
+    mockImmediateOnConnectionEstablished(facade2, client)
+    shutdownList << client
+    client.init(config)
+  }
+  and "I wait a bit", {
+    Thread.sleep(500);
+  }
+  then "the facade should be instructed to start watching symbols for all market tree stocks", {
+    Mockito.verify(facade2, Mockito.times(502)).startWatchingSymbol(Mockito.anyString())
+  }
+}
+
+scenario "stopping to watch symbols when the server publishes end of trading day", {
+  given "a fresh facade", {
+    // need a separate facade so we don't get double method invocation counting on it
+    facade2 = Mockito.mock(IDtnIQFeedFacade)
+    config.componentConfig["DtnIqfeedHistoricalClient"]["IDtnIQFeedFacade"] = facade2
+  }
+  and "time helper in simulated mode, with the time at 11am", {
+    mockTime = new MockTime(hour:11, increment:100, resetTimeHelper:true)
+  }
+  when "I create a new client", {
+    client = new DtnIqfeedHistoricalClient()
+    mockImmediateOnConnectionEstablished(facade2, client)
+    shutdownList << client
+    client.init(config)
+    sleep(200) // let a couple of heartbeats pass
+  }
+  and "subsequently publish a TRADING_CLOSED event", {
+    config.eventPublisher.publish(EventPublisher.Event.TRADING_CLOSED)
+  }
+  then "the facade should be instructed to stop watching symbols for all market tree stocks", {
+    Mockito.verify(facade2, Mockito.times(502)).stopWatchingSymbol(Mockito.anyString())
+  }
+}
+ End of commented out level1 streaming trade data tests */
+//====================================================================================================================
+
 
 scenario "initialization fails if connection not achieved within a configurable timeout", {
   given "a configuration with a short timeout", {
@@ -573,137 +580,142 @@ scenario "receiving a 'S,CURRENT UPDATE FIELDNAMES,...' message", {
   }
 }
 
-//scenario "receiving a 'S,UPDATE FIELDNAMES,...' message"
-// S,UPDATE FIELDNAMES,Symbol,Exchange ID,Last,Change,Percent Change,Total Volume,Incremental Volume,High,Low,Bid,Ask,Bid Size,Ask Size,Tick,Bid Tick,Range,Last Trade Time,Open Interest,Open,Close,Spread,Strike,Settle,Delay,Market Center,Restricted Code,Net Asset Value,Average Maturity,7 Day Yield,Last Trade Date,(Reserved),Extended Trading Last,Expiration Date,Regional Volume,Net Asset Value 2,Extended Trading Change,Extended Trading Difference,Price-Earnings Ratio,Percent Off Average Volume,Bid Change,Ask Change,Change From Open,Market Open,Volatility,Market Capitalization,Fraction Display Code,Decimal Precision,Days to Expiration,Previous Day Volume,Regions,Open Range 1,Close Range 1,Open Range 2,Close Range 2,Number of Trades Today,Bid Time,Ask Time,VWAP,TickID,Financial Status Indicator,Settlement Date,Trade Market Center,Bid Market Center,Ask Market Center,Trade Time,Available Regions
+//====================================================================================================================
+// Removed streaming level 1 trade data tests
 
-//scenario "receiving a trade (quote) update message message", {
-//  when "a trade update is received", {
-//    client.onAdminData("S,CURRENT UPDATE FIELDNAMES,Symbol,Last,Total Volume,Incremental Volume,Bid,Ask,Bid Size,Ask Size,Last Trade Time,Delay")
-//    client.onLevelOneData("Q,INTC,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:24t,,")
-//    waitForQueueToBeEmpty(client)
-//  }
-//  and "no alerts should have been issued",{
-//    def alerts = client.parserDaemonServiceBundle.alertService.alertsAsStrings.findAll{ !it.toString().contains("[IQFeed latency]")}
-//    def count = alerts.size()
-//    ensure(count){ isEqualTo 0 }
-//  }
-//  then "hasNext() should be true", {
-//    client.hasNext().shouldBe true
-//  }
-//  and "next() should retrieve the tick data", {
-//    IRealTimeTradeRecord rec = client.next()
-//    rec.symbol.shouldBe "INTC"
-//    ensureFloatClose(rec.price, 21.6, 0.001)
-//    rec.quantity.shouldBe 300
-//    rec.internalTimestamp.shouldBe(((12*60+21)*60+24)*1000)
-//    // not testing isStale here
-//  }
-//  and "the global counter trade ticks counter should be 1", {
-//    client.tradeTickCounter.shouldBe 1
-//  }
-//  and "the global counter non-trade ticks counter should be 0", {
-//    client.nonTradeTickCounter.shouldBe 0
-//  }
-//}
-//
-//scenario "receiving a bid update message message", {
-//  when "a trade update is received", {
-//    client.onAdminData("S,CURRENT UPDATE FIELDNAMES,Symbol,Last,Total Volume,Incremental Volume,Bid,Ask,Bid Size,Ask Size,Last Trade Time,Delay")
-//    client.onLevelOneData("Q,AMD,8.7400,28953244,100,8.7300,8.7400,3700,7600,11:18:38b,,")
-//    waitForQueueToBeEmpty(client)
-//  }
-//  and "no alerts should have been issued",{
-//    def count = client.parserDaemonServiceBundle.alertService.alertsAsStrings.size()
-//    ensure(count){ isEqualTo 0 }
-//  }
-//  then "hasNext() should be false", {
-//    client.hasNext().shouldBe false
-//  }
-//  and "next() should retrieve null", {
-//    IRealTimeTradeRecord rec = client.next()
-//    rec.shouldBe null
-//  }
-//  and "the global counter trade ticks counter should be 0", {
-//    client.tradeTickCounter.shouldBe 0
-//  }
-//  and "the global counter non-trade ticks counter should be 0", {
-//    client.nonTradeTickCounter.shouldBe 1
-//  }
-//}
-//
-//scenario "receiving a ask update message message", {
-//  when "a trade update is received", {
-//    client.onAdminData("S,CURRENT UPDATE FIELDNAMES,Symbol,Last,Total Volume,Incremental Volume,Bid,Ask,Bid Size,Ask Size,Last Trade Time,Delay")
-//    client.onLevelOneData("Q,AMD,8.7400,28953244,100,8.7300,8.7400,3700,7600,11:18:38a,,")
-//    waitForQueueToBeEmpty(client)
-//  }
-//  and "no alerts should have been issued",{
-//    def count = client.parserDaemonServiceBundle.alertService.alertsAsStrings.size()
-//    ensure(count){ isEqualTo 0 }
-//  }
-//  then "hasNext() should be false", {
-//    client.hasNext().shouldBe false
-//  }
-//  and "next() should retrieve null", {
-//    IRealTimeTradeRecord rec = client.next()
-//    rec.shouldBe null
-//  }
-//  and "the global counter trade ticks counter should be 0", {
-//    client.tradeTickCounter.shouldBe 0
-//  }
-//  and "the global counter non-trade ticks counter should be 0", {
-//    client.nonTradeTickCounter.shouldBe 1
-//  }
-//}
-//
-//scenario "receiving another update message message", {
-//  when "a trade update is received", {
-//    client.onAdminData("S,CURRENT UPDATE FIELDNAMES,Symbol,Last,Total Volume,Incremental Volume,Bid,Ask,Bid Size,Ask Size,Last Trade Time,Delay")
-//    client.onLevelOneData("Q,INTC,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:24t,,")
-//    client.onLevelOneData("Q,AMD,8.6600,14280541,100,8.6500,8.6600,10900,5000,12:21:31t,,")
-//    waitForQueueToBeEmpty(client)
-//  }
-//  then "no alerts should have been issued",{
-//    def alerts = client.parserDaemonServiceBundle.alertService.alertsAsStrings.findAll{ !it.toString().contains("[IQFeed latency]")}
-//    def count = alerts.size()
-//    ensure(count){ isEqualTo 0 }
-//  }
-//  and "hasNext() should be true", {
-//    client.hasNext().shouldBe true
-//  }
-//  and "next() should retrieve the INTC tick data", {
-//    IRealTimeTradeRecord rec = client.next()
-//    rec.symbol.shouldBe "INTC"
-//    ensureFloatClose(rec.price, 21.6, 0.001)
-//    rec.quantity.shouldBe 300
-//    rec.internalTimestamp.shouldBe(((12*60+21)*60+24)*1000)
-//    // not testing isStale here
-//  }
-//  and "next() again should retrieve the AMD tick data", {
-//    IRealTimeTradeRecord rec = client.next()
-//    rec.symbol.shouldBe "AMD"
-//    ensureFloatClose(rec.price, 8.66, 0.001)
-//    rec.quantity.shouldBe 100
-//    rec.internalTimestamp.shouldBe(((12*60+21)*60+31)*1000)
-//    // not testing isStale here
-//  }
-//  and "the global counter trade ticks counter should be 1", {
-//    client.tradeTickCounter.shouldBe 2
-//  }
-//  and "the global counter non-trade ticks counter should be 0", {
-//    client.nonTradeTickCounter.shouldBe 0
-//  }
-//}
-//
-//scenario "no new ticks", {
-//  then "hasNext() should be false", {
-//    client.hasNext().shouldBe false
-//  }
-//}
+/*
+scenario "receiving a 'S,UPDATE FIELDNAMES,...' message"
+S,UPDATE FIELDNAMES,Symbol,Exchange ID,Last,Change,Percent Change,Total Volume,Incremental Volume,High,Low,Bid,Ask,Bid Size,Ask Size,Tick,Bid Tick,Range,Last Trade Time,Open Interest,Open,Close,Spread,Strike,Settle,Delay,Market Center,Restricted Code,Net Asset Value,Average Maturity,7 Day Yield,Last Trade Date,(Reserved),Extended Trading Last,Expiration Date,Regional Volume,Net Asset Value 2,Extended Trading Change,Extended Trading Difference,Price-Earnings Ratio,Percent Off Average Volume,Bid Change,Ask Change,Change From Open,Market Open,Volatility,Market Capitalization,Fraction Display Code,Decimal Precision,Days to Expiration,Previous Day Volume,Regions,Open Range 1,Close Range 1,Open Range 2,Close Range 2,Number of Trades Today,Bid Time,Ask Time,VWAP,TickID,Financial Status Indicator,Settlement Date,Trade Market Center,Bid Market Center,Ask Market Center,Trade Time,Available Regions
+
+scenario "receiving a trade (quote) update message message", {
+  when "a trade update is received", {
+    client.onAdminData("S,CURRENT UPDATE FIELDNAMES,Symbol,Last,Total Volume,Incremental Volume,Bid,Ask,Bid Size,Ask Size,Last Trade Time,Delay")
+    client.onLevelOneData("Q,INTC,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:24t,,")
+    waitForQueueToBeEmpty(client)
+  }
+  and "no alerts should have been issued",{
+    def alerts = client.parserDaemonServiceBundle.alertService.alertsAsStrings.findAll{ !it.toString().contains("[IQFeed latency]")}
+    def count = alerts.size()
+    ensure(count){ isEqualTo 0 }
+  }
+  then "hasNext() should be true", {
+    client.hasNext().shouldBe true
+  }
+  and "next() should retrieve the tick data", {
+    IRealTimeTradeRecord rec = client.next()
+    rec.symbol.shouldBe "INTC"
+    ensureFloatClose(rec.price, 21.6, 0.001)
+    rec.quantity.shouldBe 300
+    rec.internalTimestamp.shouldBe(((12*60+21)*60+24)*1000)
+    // not testing isStale here
+  }
+  and "the global counter trade ticks counter should be 1", {
+    client.tradeTickCounter.shouldBe 1
+  }
+  and "the global counter non-trade ticks counter should be 0", {
+    client.nonTradeTickCounter.shouldBe 0
+  }
+}
+
+scenario "receiving a bid update message message", {
+  when "a trade update is received", {
+    client.onAdminData("S,CURRENT UPDATE FIELDNAMES,Symbol,Last,Total Volume,Incremental Volume,Bid,Ask,Bid Size,Ask Size,Last Trade Time,Delay")
+    client.onLevelOneData("Q,AMD,8.7400,28953244,100,8.7300,8.7400,3700,7600,11:18:38b,,")
+    waitForQueueToBeEmpty(client)
+  }
+  and "no alerts should have been issued",{
+    def count = client.parserDaemonServiceBundle.alertService.alertsAsStrings.size()
+    ensure(count){ isEqualTo 0 }
+  }
+  then "hasNext() should be false", {
+    client.hasNext().shouldBe false
+  }
+  and "next() should retrieve null", {
+    IRealTimeTradeRecord rec = client.next()
+    rec.shouldBe null
+  }
+  and "the global counter trade ticks counter should be 0", {
+    client.tradeTickCounter.shouldBe 0
+  }
+  and "the global counter non-trade ticks counter should be 0", {
+    client.nonTradeTickCounter.shouldBe 1
+  }
+}
+
+scenario "receiving a ask update message message", {
+  when "a trade update is received", {
+    client.onAdminData("S,CURRENT UPDATE FIELDNAMES,Symbol,Last,Total Volume,Incremental Volume,Bid,Ask,Bid Size,Ask Size,Last Trade Time,Delay")
+    client.onLevelOneData("Q,AMD,8.7400,28953244,100,8.7300,8.7400,3700,7600,11:18:38a,,")
+    waitForQueueToBeEmpty(client)
+  }
+  and "no alerts should have been issued",{
+    def count = client.parserDaemonServiceBundle.alertService.alertsAsStrings.size()
+    ensure(count){ isEqualTo 0 }
+  }
+  then "hasNext() should be false", {
+    client.hasNext().shouldBe false
+  }
+  and "next() should retrieve null", {
+    IRealTimeTradeRecord rec = client.next()
+    rec.shouldBe null
+  }
+  and "the global counter trade ticks counter should be 0", {
+    client.tradeTickCounter.shouldBe 0
+  }
+  and "the global counter non-trade ticks counter should be 0", {
+    client.nonTradeTickCounter.shouldBe 1
+  }
+}
+
+scenario "receiving another update message message", {
+  when "a trade update is received", {
+    client.onAdminData("S,CURRENT UPDATE FIELDNAMES,Symbol,Last,Total Volume,Incremental Volume,Bid,Ask,Bid Size,Ask Size,Last Trade Time,Delay")
+    client.onLevelOneData("Q,INTC,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:24t,,")
+    client.onLevelOneData("Q,AMD,8.6600,14280541,100,8.6500,8.6600,10900,5000,12:21:31t,,")
+    waitForQueueToBeEmpty(client)
+  }
+  then "no alerts should have been issued",{
+    def alerts = client.parserDaemonServiceBundle.alertService.alertsAsStrings.findAll{ !it.toString().contains("[IQFeed latency]")}
+    def count = alerts.size()
+    ensure(count){ isEqualTo 0 }
+  }
+  and "hasNext() should be true", {
+    client.hasNext().shouldBe true
+  }
+  and "next() should retrieve the INTC tick data", {
+    IRealTimeTradeRecord rec = client.next()
+    rec.symbol.shouldBe "INTC"
+    ensureFloatClose(rec.price, 21.6, 0.001)
+    rec.quantity.shouldBe 300
+    rec.internalTimestamp.shouldBe(((12*60+21)*60+24)*1000)
+    // not testing isStale here
+  }
+  and "next() again should retrieve the AMD tick data", {
+    IRealTimeTradeRecord rec = client.next()
+    rec.symbol.shouldBe "AMD"
+    ensureFloatClose(rec.price, 8.66, 0.001)
+    rec.quantity.shouldBe 100
+    rec.internalTimestamp.shouldBe(((12*60+21)*60+31)*1000)
+    // not testing isStale here
+  }
+  and "the global counter trade ticks counter should be 1", {
+    client.tradeTickCounter.shouldBe 2
+  }
+  and "the global counter non-trade ticks counter should be 0", {
+    client.nonTradeTickCounter.shouldBe 0
+  }
+}
+
+scenario "no new ticks", {
+  then "hasNext() should be false", {
+    client.hasNext().shouldBe false
+  }
+}
+
+*/
+//====================================================================================================================
 
 
-// FIXME reinstate the following test
-/** Was failing when upgrading to groovy 1.8+.  Moved to {@link com.intellitrade.test.suite.IQFeedTest#receivingAFundamentalMessageFollowedByAFundamentalMessage}.
 // S,FUNDAMENTAL FIELDNAMES,Symbol,Exchange ID,PE,Average Volume,52 Week High,52 Week Low,Calendar Year High,Calendar Year Low,Dividend Yield,Dividend Amount,Dividend Rate,Pay Date,Ex-dividend Date,(Reserved),(Reserved),(Reserved),Short Interest,(Reserved),Current Year EPS,Next Year EPS,Five-year Growth Percentage,Fiscal Year End,(Reserved),Company Name,Root Option Symbol,Percent Held By Institutions,Beta,Leaps,Current Assets,Current Liabilities,Balance Sheet Date,Long-term Debt,Common Shares Outstanding,(Reserved),Split Factor 1,Split Factor 2,(Reserved),Market Center,Format Code,Precision,SIC,Historical Volatility,Security Type,Listed Market,52 Week High Date,52 Week Low Date,Calendar Year High Date,Calendar Year Low Date,Year End Close,Maturity Date,Coupon Rate,Expiration Date,Strike Proce,NAICS
 // F,IBM,D,12.9,8620000,134.2500,99.5000,134.2500,116.0000,2.00,0.55,2.60,06/10/2010,05/06/2010,1,7,,9441017,,10.28,11.26,16.89,12,,INTERNATIONAL BUSINESS MACHINE,IBM,64.,0.69,VIB WIB XBY,48935.0,36002.0,03/01/2010,21932.0,1282348,334111,0.50 05/27/1999,0.50 05/28/1997,,n,14,4,3571,22.76,1,7,01/19/2010,07/08/2009,01/19/2010,05/06/2010,130.90,,,,,334111,,
 scenario "receiving a 'S,FUNDAMENTAL FIELDNAMES,...' message followed by a FUNDAMENTALS message", {
@@ -753,7 +765,7 @@ scenario "receiving a 'S,FUNDAMENTAL FIELDNAMES,...' message followed by a FUNDA
     def count = client.parserDaemonServiceBundle.alertService.alertsAsStrings.size()
     ensure(count){ isEqualTo 0 }
   }
-}*/
+}
 
 // FIXME probably need some functionality for a timestamp message even when streaming not supported
 
@@ -814,143 +826,145 @@ scenario "receiving a 'S,FUNDAMENTAL FIELDNAMES,...' message followed by a FUNDA
 //  }
 //}
 
-//**************************************************************************************************************
+//====================================================================================================================
 // IRealTimeDataSource behavior
+/*
+scenario "responding to blockingWaitForData()", {
+  given "a test coordinator", {
+    coord = new TestCoordinator()
+  }
+  and "a release marker", {
+    marker = "blocked" // remains blocked until unblocked
+  }
+  when "a main loop calls blockingWaitForData()", {
+    mainLoop = {
+      client.blockingWaitForData()
+      marker = "unblocked" // mark that we got unblocked
+      coord.finishTest()
+    }
+    new Thread(mainLoop).start()
+  }
+  then "the client is blocked", {
+    sleep(100)
+    marker.shouldBe "blocked"
+  }
+  and "it gets unblocked when new tick data is made available", {
+    client.onAdminData("S,CURRENT UPDATE FIELDNAMES,Symbol,Last,Total Volume,Incremental Volume,Bid,Ask,Bid Size,Ask Size,Last Trade Time,Delay")
+    client.onLevelOneData("Q,INTC,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:24t,,")
+    waitForQueueToBeEmpty(client,10)
+    coord.delayTestFinish(100)
+    marker.shouldBe "unblocked"
+  }
+}
 
-//scenario "responding to blockingWaitForData()", {
-//  given "a test coordinator", {
-//    coord = new TestCoordinator()
-//  }
-//  and "a release marker", {
-//    marker = "blocked" // remains blocked until unblocked
-//  }
-//  when "a main loop calls blockingWaitForData()", {
-//    mainLoop = {
-//      client.blockingWaitForData()
-//      marker = "unblocked" // mark that we got unblocked
-//      coord.finishTest()
-//    }
-//    new Thread(mainLoop).start()
-//  }
-//  then "the client is blocked", {
-//    sleep(100)
-//    marker.shouldBe "blocked"
-//  }
-//  and "it gets unblocked when new tick data is made available", {
-//    client.onAdminData("S,CURRENT UPDATE FIELDNAMES,Symbol,Last,Total Volume,Incremental Volume,Bid,Ask,Bid Size,Ask Size,Last Trade Time,Delay")
-//    client.onLevelOneData("Q,INTC,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:24t,,")
-//    waitForQueueToBeEmpty(client,10)
-//    coord.delayTestFinish(100)
-//    marker.shouldBe "unblocked"
-//  }
-//}
 
+**************************************************************************************************************
+other
+scenario "hiccup detection", {
+  given "that the hiccup alert threahold is 90msec", {
+    client.maxMillisBetweenTicks = 90
+  }
+  and "TimeHelper in simulated mode", {
+    mockTime = new MockTime(hour:11, increment:100, resetTimeHelper:true)
+  }
+  and "that at least one tick was already observed", {
+    client.onAdminData("S,CURRENT UPDATE FIELDNAMES,Symbol,Last,Total Volume,Incremental Volume,Bid,Ask,Bid Size,Ask Size,Last Trade Time,Delay")
+    client.onLevelOneData("Q,INTC,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:24t,,")
+    waitForQueueToBeEmpty(client,10)
+  }
+  when "no ticks are observed in 300msec", {
+    // sleep has to be long enough. Heartbeat is 100msec
+    sleep(300)
+  }
+  then "a IQFeed hiccup alert should have been issued", {
+    def alerts = client.heartBeatServicesBundle.alertService.alertsAsStrings
+    ensure(alerts.size()) {
+      isNotEqualTo 0
+    }
+    ensure(alerts[0]) {
+      isNotNull
+      and
+      contains("[IQFeed hiccup]")
+    }
+  }
+}
 
-//**************************************************************************************************************
-// other
-//scenario "hiccup detection", {
-//  given "that the hiccup alert threahold is 90msec", {
-//    client.maxMillisBetweenTicks = 90
-//  }
-//  and "TimeHelper in simulated mode", {
-//    mockTime = new MockTime(hour:11, increment:100, resetTimeHelper:true)
-//  }
-//  and "that at least one tick was already observed", {
-//    client.onAdminData("S,CURRENT UPDATE FIELDNAMES,Symbol,Last,Total Volume,Incremental Volume,Bid,Ask,Bid Size,Ask Size,Last Trade Time,Delay")
-//    client.onLevelOneData("Q,INTC,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:24t,,")
-//    waitForQueueToBeEmpty(client,10)
-//  }
-//  when "no ticks are observed in 300msec", {
-//    // sleep has to be long enough. Heartbeat is 100msec
-//    sleep(300)
-//  }
-//  then "a IQFeed hiccup alert should have been issued", {
-//    def alerts = client.heartBeatServicesBundle.alertService.alertsAsStrings
-//    ensure(alerts.size()) {
-//      isNotEqualTo 0
-//    }
-//    ensure(alerts[0]) {
-//      isNotNull
-//      and
-//      contains("[IQFeed hiccup]")
-//    }
-//  }
-//}
+IMPORTANT: Stale ticks are tracked in the main loop and in the consumers. Here we just track the flow and order, not the age.
 
-// IMPORTANT: Stale ticks are tracked in the main loop and in the consumers. Here we just track the flow and order, not the age.
-
-//scenario "tracking out of order trade ticks", {
-//  when "we receive multiple ticks, but they come out of order", {
-//    client.onAdminData("S,CURRENT UPDATE FIELDNAMES,Symbol,Last,Total Volume,Incremental Volume,Bid,Ask,Bid Size,Ask Size,Last Trade Time,Delay")
-//    client.onLevelOneData("Q,INTC,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:24t,,") //OK
-//    client.onLevelOneData("Q,IBM,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:25t,,")  //OK
-//    client.onLevelOneData("Q,INTC,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:21t,,") // out of order
-//    client.onLevelOneData("Q,AMD,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:24t,,")  // out of order
-//    client.onLevelOneData("Q,INTC,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:25t,,") //OK
-//    waitForQueueToBeEmpty(client,10)
-//  }
-//  then "the outOfOrderTicks counter should reflect the number of ticks out of order", {
-//    ensure(client.outOfOrderTickCounter) {
-//      equals 2
-//    }
-//  }
-//}
+scenario "tracking out of order trade ticks", {
+  when "we receive multiple ticks, but they come out of order", {
+    client.onAdminData("S,CURRENT UPDATE FIELDNAMES,Symbol,Last,Total Volume,Incremental Volume,Bid,Ask,Bid Size,Ask Size,Last Trade Time,Delay")
+    client.onLevelOneData("Q,INTC,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:24t,,") //OK
+    client.onLevelOneData("Q,IBM,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:25t,,")  //OK
+    client.onLevelOneData("Q,INTC,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:21t,,") // out of order
+    client.onLevelOneData("Q,AMD,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:24t,,")  // out of order
+    client.onLevelOneData("Q,INTC,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:25t,,") //OK
+    waitForQueueToBeEmpty(client,10)
+  }
+  then "the outOfOrderTicks counter should reflect the number of ticks out of order", {
+    ensure(client.outOfOrderTickCounter) {
+      equals 2
+    }
+  }
+}
 
 // FIXME broken scenario
-//scenario "exposing stats updated via the heartbeat (queue lengths, counters, etc)", {
-//  given "that a few ticks were observed", {
-//    client.onAdminData("S,CURRENT UPDATE FIELDNAMES,Symbol,Last,Total Volume,Incremental Volume,Bid,Ask,Bid Size,Ask Size,Last Trade Time,Delay")
-//    client.onLevelOneData("Q,INTC,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:24t,,") //OK
-//    client.onLevelOneData("Q,IBM,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:25t,,")  //OK
-//    waitForQueueToBeEmpty(client,10)
-//  }
-//  and "the stats object for the heartbeat thread", {
-//    stats = client.heartBeatServicesBundle.statsService
-//  }
-//  when "we wait a bit to have at least one heartbeat", {
-//    sleep(150)
-//  }
-//  [
-//    "rawMessageQueueSize",
-//    "tickQueueSize",
-//    "blockingWaitCounter",
-//    "tradeTickCounter",
-//    "nonTradeTickCounter",
-//    "lastObservedTickTs",
-//    "maxObservedTickTimestamp",
-//    "currentLocalBandwidthConsumption",
-//    "currentInternetBandwidthConsumption"
-//  ].each {stat ->
-//    then "the heartbeat stats should contain a value for $stat", {
-//      def statName = "IQFeed client $stat"
-//      ensure(stats.getStat(statName)) {
-//        isNotNull
-//      }
-//    }
-//  }
-//  [
-//    "staleTickCounter",
-//    "staleTickLastAge",
-//    "staleTickAverageAge",
-//    "staleTickMaxAge",
-//    "staleTickMinAge",
-//    "staleTickStdevAge",
-//    "outOfOrderTickCounter",
-//    "outOfOrderTicksCurried",
-//    "outOfOrderTickAverageAge",
-//    "outOfOrderTickMaxAge",
-//    "outOfOrderTickMinAge",
-//    "outOfOrderTickStdevAge",
-//  ].each {stat ->
-//    then "the heartbeat staleness stats should contain a value for $stat", {
-//      def statName = "IQFeed client staleness $stat"
-//      ensure(stats.getStat(statName)) {
-//        isNotNull
-//      }
-//    }
-//  }
-//}
+scenario "exposing stats updated via the heartbeat (queue lengths, counters, etc)", {
+  given "that a few ticks were observed", {
+    client.onAdminData("S,CURRENT UPDATE FIELDNAMES,Symbol,Last,Total Volume,Incremental Volume,Bid,Ask,Bid Size,Ask Size,Last Trade Time,Delay")
+    client.onLevelOneData("Q,INTC,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:24t,,") //OK
+    client.onLevelOneData("Q,IBM,21.6000,35089385,300,21.6000,21.6100,24800,10100,12:21:25t,,")  //OK
+    waitForQueueToBeEmpty(client,10)
+  }
+  and "the stats object for the heartbeat thread", {
+    stats = client.heartBeatServicesBundle.statsService
+  }
+  when "we wait a bit to have at least one heartbeat", {
+    sleep(150)
+  }
+  [
+    "rawMessageQueueSize",
+    "tickQueueSize",
+    "blockingWaitCounter",
+    "tradeTickCounter",
+    "nonTradeTickCounter",
+    "lastObservedTickTs",
+    "maxObservedTickTimestamp",
+    "currentLocalBandwidthConsumption",
+    "currentInternetBandwidthConsumption"
+  ].each {stat ->
+    then "the heartbeat stats should contain a value for $stat", {
+      def statName = "IQFeed client $stat"
+      ensure(stats.getStat(statName)) {
+        isNotNull
+      }
+    }
+  }
+  [
+    "staleTickCounter",
+    "staleTickLastAge",
+    "staleTickAverageAge",
+    "staleTickMaxAge",
+    "staleTickMinAge",
+    "staleTickStdevAge",
+    "outOfOrderTickCounter",
+    "outOfOrderTicksCurried",
+    "outOfOrderTickAverageAge",
+    "outOfOrderTickMaxAge",
+    "outOfOrderTickMinAge",
+    "outOfOrderTickStdevAge",
+  ].each {stat ->
+    then "the heartbeat staleness stats should contain a value for $stat", {
+      def statName = "IQFeed client staleness $stat"
+      ensure(stats.getStat(statName)) {
+        isNotNull
+      }
+    }
+  }
+}
 
+*/
+//====================================================================================================================
 scenario "interacting with the facade with onSystemMessage", {
   when "the client gets a 'S,REGISTER CLIENT APP COMPLETED' message", {
     client.onAdminData("S,REGISTER CLIENT APP COMPLETED,")

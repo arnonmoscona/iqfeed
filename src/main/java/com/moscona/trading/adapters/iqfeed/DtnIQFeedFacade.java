@@ -41,10 +41,10 @@ import java.util.concurrent.locks.ReentrantLock;
  */
 @SuppressWarnings({"UnusedDeclaration"}) // dependency injection
 public class DtnIQFeedFacade implements IDtnIQFeedFacade {
+    //<editor-fold desc="Constants">
     public static final int ADMIN_PORT = 9300;
     public static final int LEVEL1_PORT = 5009;
     public static final int LEVEL1_LOOKUP_PORT = 9100;
-    //public static final int LEVEL1_LOOKUP_PORT = 9100;
 
     public static final int ADMIN_BUFFER_SIZE = 1024*2;
     public static final int LEVEL1_LOOKUP_BUFFER_SIZE = 1024*2;
@@ -55,7 +55,9 @@ public class DtnIQFeedFacade implements IDtnIQFeedFacade {
      */
     public static final String APP_NAME = "ARNON_MOSCONA_1407";
     public static final String APP_VERSION = "0.1";
+    //</editor-fold>
 
+    //<editor-fold desc="private fields">
     @SuppressWarnings({"FieldCanBeLocal"})
     private IDtnIQFeedConfig config = null;
     private IDtnIQFeedHistoricalClient client=null;
@@ -71,8 +73,6 @@ public class DtnIQFeedFacade implements IDtnIQFeedFacade {
     private int currentLookupChannelNumber = 0;
     private final Object lookupChannelMonitor = new Object(); // used for synchronization only
 
-    //private LocalSocketConnection lookup=null;
-
     private AtomicBoolean isShutdown;
     private AtomicBoolean isIqConnectDead;
     private AtomicBoolean isIqConnectDestroyed;
@@ -84,6 +84,7 @@ public class DtnIQFeedFacade implements IDtnIQFeedFacade {
 
     private ReentrantLock startStopLock;
     private Set<String> watchList;
+    //</editor-fold>
 
     @SuppressWarnings({"UnusedDeclaration"})
     public DtnIQFeedFacade() {
