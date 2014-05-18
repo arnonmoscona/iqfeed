@@ -1169,7 +1169,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
 
                 int field = 1;
                 String timestampString = line[field++];
-                Calendar timestamp = TimeHelper.parse(timestampString);
+                Calendar timestamp = TimeHelper.parse(timestampString); // FIXME This should be extracted from TimeHelper
                 timestamp.add(unit, unitIncrement); // IQFeed gives back as timestamp the closing time!
                 float high = Float.parseFloat(line[field++].trim());
                 float low = Float.parseFloat(line[field++].trim());
