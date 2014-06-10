@@ -7,8 +7,28 @@
     <version>1.0-SNAPSHOT</version>
     <packaging>jar</packaging>
 
-    <name>iqfeed</name>
-    <url>http://maven.apache.org</url>
+    <name>com.moscona.common.iqfeed</name>
+    <url>https://github.com/arnonmoscona/iqfeed</url>
+    <description>
+        Integration library for IQFeed for simplifying use of the IQFeed API
+    </description>
+    <licenses><license>
+        <name>Apache Licence Version 2.0</name>
+        <url>http://www.apache.org/licenses/LICENSE-2.0</url>
+    </license></licenses>
+    <developers>
+        <developer>
+            <name>Arnon Moscona</name>
+            <url>https://github.com/arnonmoscona</url>
+            <id>arnonmoscona</id>
+        </developer>
+    </developers>
+    <scm>
+        <url>scm:git:git@github.com:arnonmoscona/iqfeed.git</url>
+    </scm>
+    <issueManagement>
+        <url>http://moscona.myjetbrains.com/youtrack/issues/IQ</url>
+    </issueManagement>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
