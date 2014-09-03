@@ -2,7 +2,7 @@ import org.mockito.Mockito   //FIXME should be replaced by jMockit, probably
 import org.mockito.stubbing.Answer
 import org.mockito.invocation.InvocationOnMock
 
-import jconch.testing.TestCoordinator
+import com.moscona.util.testing.TestCoordinator
 
 import com.moscona.test.easyb.MockLogFactory
 import static com.moscona.test.easyb.TestHelper.*
