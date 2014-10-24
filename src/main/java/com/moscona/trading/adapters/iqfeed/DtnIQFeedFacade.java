@@ -836,7 +836,7 @@ public class DtnIQFeedFacade implements IDtnIQFeedFacade {
     }
 
     /**
-     * Requests lookup data for minute data. Generally translates into a HIT request.
+     * Requests lookup data for daily data. Generally translates into a HDT request.
      * This is here mostly to help testability a bit.
      * @param symbol the symbol
      * @param from an IQFeed timestamp e.g. "20100708 093000"

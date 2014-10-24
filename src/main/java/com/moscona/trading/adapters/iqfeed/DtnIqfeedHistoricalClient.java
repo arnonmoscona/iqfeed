@@ -4,6 +4,8 @@ import com.moscona.events.EventPublisher;
 import com.moscona.threads.RealTimeProviderConnectionThread;
 import com.moscona.trading.IServicesBundle;
 import com.moscona.trading.adapters.DataSourceCoreStats;
+import com.moscona.trading.adapters.iqfeed.lookup.DtnIQFeedMinuteLookup;
+import com.moscona.trading.adapters.iqfeed.lookup.ILookupResponseHandler;
 import com.moscona.trading.elements.SymbolChart;
 import com.moscona.trading.excptions.MissingSymbolException;
 import com.moscona.trading.formats.deprecated.MarketTree;
@@ -31,10 +33,7 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.text.SimpleDateFormat;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Condition;
@@ -64,6 +63,8 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
      *    world...
      *
      * Future implementation note: could simplify the whole thing by using something like Apache Camel...
+     * Also CompletableFuture should come in handy. The main issuie with it would be that you don't want user code
+     * running in the adapter thread
      * ***************************************************************************************************************
      */
       //<editor-fold desc="Constants">
@@ -126,7 +127,9 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
      */
     private AsyncFunctionFutureResults<Bar> dailyDataPendingCalls = null;
     private AsyncFunctionFutureResults<List<TimeSlotBarWithTimeStamp>> barsRequestPendingCalls = null;
+    // FIXME the following should go away after refactoring is done
     private ConcurrentHashMap<String, Integer> tagToHandlerIdMap = null;  // maps the callback tag for async responses to data handler IDs
+    private ConcurrentHashMap<String, ILookupResponseHandler<ArrayList<String[]>>> tagToResponseHandlerMethodMap = null; // maps tags to the specific callable that's going to handle it (instead of to a numeric code that represents the method)
     private ConcurrentHashMap<String, ArrayList<String[]>> pendingLookupData; // holds tagged lookup data that has not been completed yet (no !ENDMSG! seen)
 
     private AsyncFunctionFutureResults<Fundamentals> fundamentalsDataPendingCalls = null;
@@ -168,7 +171,8 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
 
         blockingWaitCounter = new AtomicInteger(0);
 
-        tagToHandlerIdMap = new ConcurrentHashMap<>();
+        tagToHandlerIdMap = new ConcurrentHashMap<>(); // FIXME goes away after refactoring done
+        tagToResponseHandlerMethodMap = new ConcurrentHashMap<>();
         pendingLookupData = new ConcurrentHashMap<>();
         fundamentalsRequested = new AtomicBoolean(false);
     }
@@ -470,6 +474,18 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
         daemonsShouldBeRunning.set(false);
     }
 
+
+    /**
+     * Registers a response handler for a specific tag. The handler gets called once the entire response is done, but not
+     * before. This is for a synchronous wrapper style. A more streaming approach is done separately (if it gets
+     * implemented at all)
+     * @param tag
+     * @param handler
+     */
+    public void registerResponseHandler(String tag, ILookupResponseHandler<ArrayList<String[]>> handler) {
+        tagToResponseHandlerMethodMap.put(tag, handler); // this should auto-deregister once the handler returns
+    }
+
     @Override
     /**
      * A callback for the facade to notify the client about new data received on the lookup port
@@ -490,7 +506,8 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
                 continue;
             }
             String tag = fields[0];
-            if (! tagToHandlerIdMap.containsKey(tag)) {
+
+            if (! tagToHandlerIdMap.containsKey(tag) && !tagToResponseHandlerMethodMap.containsKey(tag)) {
                 sendLookupAlert("Unregistered tag in response from lookup (ignoring): "+tag, IQFEED_LOOKUP_ERROR_ALERT_MESSAGE_TYPE);
                 continue;
             }
@@ -598,87 +615,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
      *
      */
     public SymbolChart getMinuteBars(String symbol, Calendar from, Calendar to, int timeout, TimeUnit unit, int retryLimit) throws InvalidArgumentException, InvalidStateException, TimeoutException, MissingSymbolException {
-        // when you send a HIT request on the lookup port you get data from the minute starting at the start
-        //   * if you request "HIT,INTC,60,20100708 093000,20100708 201000,,,,1,Partial day minutes: INTC"
-        //     then the first response will be 2010-07-08 09:31:00
-        //   * the last bar will be either the last one available (that had data) or the END of the minute requested
-        //     so if the to is "20100708 094000"
-        //     then the last point will be "2010-07-08 09:41:00"
-
-        // calculate boundary times
-        int requestStarted = TimeHelper.now();
-
-        Calendar start = (Calendar) from.clone();
-        Calendar end = (Calendar) to.clone();
-        end.set(Calendar.SECOND, 0);
-        end.set(Calendar.MILLISECOND, 0);
-        end.add(Calendar.MINUTE, -1);
-
-        String startString = toIqFeedTimestamp(start);
-        String endString = toIqFeedTimestamp(end);
-
-        AsyncFunctionFutureResults<List<TimeSlotBarWithTimeStamp>> pending = getBarsRequestPendingCalls();
-        int remainingAttempts = retryLimit + 1;
-        List<TimeSlotBarWithTimeStamp> answer = null;
-
-        do {
-            remainingAttempts--;
-            String tag = "getMinuteBars(" + symbol + ") " + new Date().getTime();
-            tagToHandlerIdMap.put(tag, HANDLER_MINUTE_BARS); // control data routing in the onLookupData method
-
-            AsyncFunctionCall<List<TimeSlotBarWithTimeStamp>> minutesBarCall = new MinutesBarCall(symbol, startString, endString, tag).use(pending);
-            answer = null;
-
-            try {
-                answer = minutesBarCall.call(timeout, unit);
-                logSymbolTiming(symbol, requestStarted, "getMinuteBars/minutesBarCall", null);
-            } catch (IQFeedError e) {
-                handleLookupIQFeedError(e, symbol, requestStarted, "getMinuteBars/minutesBarCall", "IQFeedError while trying to get minute data for " + symbol + ": " + e);
-            } catch (Exception e) {
-                Throwable iqFeedError = ExceptionHelper.fishOutOf(e, IQFeedError.class, 20);
-                if (iqFeedError != null) {
-                    handleLookupIQFeedError((IQFeedError) iqFeedError, symbol, requestStarted, "getMinuteBars/minutesBarCall", "IQFeedError while trying to get minute data for " + symbol + ": " + e);
-                } else {
-                    logSymbolTiming(symbol, requestStarted, "getMinuteBars/minutesBarCall", e);
-                    throw new InvalidStateException("Exception while trying to get minute data for " + symbol + " with timeout " + timeout + " " + unit + ": " + e, e);
-                }
-            } finally {
-                tagToHandlerIdMap.remove(tag); // this tag is unique(ish) and is for one time use
-            }
-        } while (remainingAttempts > 0 && answer == null);
-
-        // verify the return value
-        long expectedCount = (to.getTimeInMillis() - from.getTimeInMillis()) / MILLIS_PER_MINUTE;
-        if (expectedCount < answer.size()) {
-            String firstBar = null;
-            String lastBar = null;
-            if (answer.size() > 0) {
-                TimeSlotBarWithTimeStamp first = answer.get(0);
-                if (first != null) {
-                    firstBar = first.toString();
-                }
-
-                TimeSlotBarWithTimeStamp last = answer.get(answer.size() - 1);
-                if (last != null) {
-                    lastBar = last.toString();
-                }
-            }
-            InvalidStateException e = new InvalidStateException("getMinuteBars(): Got an answer with the wrong number of bars. Expected " + expectedCount +
-                    " but got " + answer.size() + " bars instead. " +
-                    "the first bar is " + firstBar + " and the last bar is " + lastBar);
-            logSymbolTiming(symbol, requestStarted, "getMinuteBars", e);
-            throw e;
-        }
-
-        // Convert the answer into a SymbolChart
-        SymbolChart retval = new SymbolChart(symbol,
-                TimeHelper.timeStampRelativeToMidnight(from),
-                TimeHelper.timeStampRelativeToMidnight(to), ONE_MINUTE_IN_MILLIS);
-
-        // we may not have gotten an answer for every minute
-        fillChartFromBars(answer, retval, 0);
-
-        return retval;
+        return new DtnIQFeedMinuteLookup(this).getMinuteBars(symbol, from, to, timeout, unit, retryLimit);
     }
 
     @Override
@@ -827,7 +764,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
             try {
                 answer = dayBarCall.call(timeout, unit);
             } catch (IQFeedError e) {
-                boolean shouldRetry = e.isRetriable && remainingAttempts > 0;
+                boolean shouldRetry = e.isRetriable() && remainingAttempts > 0;
                 if (!shouldRetry) {
                     throw new InvalidStateException("IQFeedError while trying to get one year of day data for " + symbol + ": " + e, e);
                 } else {
@@ -996,26 +933,33 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
         getBarsRequestPendingCalls().setDataSize(tag, list.size());
         try {
             pendingLookupData.remove(tag);
-            int handlerId = tagToHandlerIdMap.get(tag);
-            switch (handlerId) {
-                case HANDLER_31_DAY_BARS:
-                    handle31DayBars(list);
-                    break;
-                case HANDLER_MINUTE_BARS:
-                    handleMinuteBars(list);
-                    break;
-                case HANDLER_TICKS_TO_SECOND_BARS:
-                    handleTicksToSecondBars(list);
-                    break;
-                case HANDLER_DAY_BARS:
-                    handleDayBars(list);
-                    break;
-                default:
-                    sendLookupAlert("Unknown handler for tag '" + tag + "': " + handlerId, IQFEED_LOOKUP_ERROR_ALERT_MESSAGE_TYPE);
+            if (tagToResponseHandlerMethodMap.containsKey(tag)) {
+                // give priority to the registered handler
+                tagToResponseHandlerMethodMap.get(tag).handleResponse(list);
+            }
+            else {
+                //FIXME this needs to be cleaned up for packaged handlers. No predefined IDs
+                int handlerId = tagToHandlerIdMap.get(tag);
+                switch (handlerId) {
+                    case HANDLER_31_DAY_BARS:
+                        handle31DayBars(list);
+                        break;
+                    case HANDLER_TICKS_TO_SECOND_BARS:
+                        handleTicksToSecondBars(list);
+                        break;
+                    case HANDLER_DAY_BARS:
+                        handleDayBars(list);
+                        break;
+                    default:
+                        sendLookupAlert("Unknown handler for tag '" + tag + "': " + handlerId, IQFEED_LOOKUP_ERROR_ALERT_MESSAGE_TYPE);
+                }
             }
         } finally {
             long processingTime = System.currentTimeMillis() - start;
             getBarsRequestPendingCalls().setPostResponseProcessingTime(tag, processingTime);
+            if (tagToResponseHandlerMethodMap.containsKey(tag)) {
+                tagToResponseHandlerMethodMap.remove(tag);
+            }
         }
     }
 
@@ -1201,6 +1145,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
     @SuppressWarnings({"ThrowableInstanceNeverThrown"})
     private void handleTicksToSecondBars(ArrayList<String[]> list) throws InvalidStateException, InvalidArgumentException {
         // FIXME This should be factored out as a part of a pluggable add-on
+        // FIXME With IQFeed 5.x should be able to directly lookup seconds without having to lookup ticks
         if (list.size() == 0) {
             return; // nothing to do and don't know how to tell any pending call
         }
@@ -1290,12 +1235,13 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
         }
     }
 
-    private boolean canRetry(String literalError) {
+    public boolean canRetry(String literalError) {
         return literalError.contains("Could not connect to History socket") ||
                 literalError.contains("Unknown Server Error") ||
                 literalError.contains("Socket Error: 10054 (WSAECONNRESET)");  // connection rest by peer
     }
 
+    //FIXME probably should be removed after refactoring
     private int toCents(float price) {
         return Math.round(price * 100.0f);
     }
@@ -1310,7 +1256,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
      * @param msg
      * @throws InvalidStateException
      */
-    private void handleLookupIQFeedError(IQFeedError e, String symbol, int requestStarted, String logTag, String msg) throws InvalidStateException {
+    public void handleLookupIQFeedError(IQFeedError e, String symbol, int requestStarted, String logTag, String msg) throws InvalidStateException {
         logSymbolTiming(symbol, requestStarted, logTag, e);
         if (!e.isRetriable()) {
             throw new InvalidStateException(msg, e);
@@ -1336,7 +1282,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
         }
     }
 
-    private void logSymbolTiming(String symbol, int requestStarted, String context, Exception e) {
+    public void logSymbolTiming(String symbol, int requestStarted, String context, Exception e) {
         try {
             synchronized (this) {
                 if (timingLogFile == null) {
@@ -1380,7 +1326,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
      * @param cal
      * @return
      */
-    private String toIqFeedTimestamp(Calendar cal) {
+    public String toIqFeedTimestamp(Calendar cal) { //FIXME I think this should really be in the facade, and that the facade should be able to consume Calendar objects directly, as well as the appropriate Java8 date/time objects
         StringBuilder retval = new StringBuilder();
 
         retval.append(cal.get(Calendar.YEAR));
@@ -1395,12 +1341,12 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
     }
 
     /**
-     * Converts a calendar to an IQFeed timestamp "yyyyMMdd hhmmss"
+     * Converts a calendar to an IQFeed date "yyyyMMdd"
      *
      * @param cal
      * @return
      */
-    private String toIqFeedDate(Calendar cal) {
+    private String toIqFeedDate(Calendar cal) { //FIXME I think this should really be in the facade, and that the facade should be able to consume Calendar objects directly, as well as the appropriate Java8 date/time objects
         StringBuilder retval = new StringBuilder();
 
         retval.append(cal.get(Calendar.YEAR));
@@ -1528,6 +1474,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
         }
     }
 
+    //FIXME probably should be removed after refactoring...
     private void fillChartFromBars(List<TimeSlotBarWithTimeStamp> answer, SymbolChart retval, int indexOffset) throws InvalidArgumentException {
         // now, the trick is that you may not get bars for every period, so you must be careful about which bars are for which period
         int currentBarIndex = 0;
@@ -1983,7 +1930,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
         return heartBeatServicesBundle;
     }
 
-    private synchronized AsyncFunctionFutureResults<List<TimeSlotBarWithTimeStamp>> getBarsRequestPendingCalls() {
+    public synchronized AsyncFunctionFutureResults<List<TimeSlotBarWithTimeStamp>> getBarsRequestPendingCalls() {
         if (barsRequestPendingCalls == null) {
             barsRequestPendingCalls = new AsyncFunctionFutureResults<List<TimeSlotBarWithTimeStamp>>();
         }
@@ -1995,6 +1942,14 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
             fundamentalsDataPendingCalls = new AsyncFunctionFutureResults<Fundamentals>();
         }
         return fundamentalsDataPendingCalls;
+    }
+
+    public IDtnIQFeedFacade getFacade() {
+        return facade;
+    }
+
+    public IDtnIQFeedConfig getConfig() {
+        return config;
     }
 
     //</editor-fold>
@@ -2150,24 +2105,7 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
         }
     }
 
-    public class IQFeedError extends Exception {
-        private String literalError;
-        private boolean isRetriable = true;
 
-        protected IQFeedError(String literalError, String message, boolean isRetriable) {
-            super(message);
-            this.literalError = literalError;
-            this.isRetriable = isRetriable;
-        }
-
-        public String getLiteralError() {
-            return literalError;
-        }
-
-        public boolean isRetriable() {
-            return isRetriable;
-        }
-    }
 
     protected class DayBarCall extends AsyncFunctionCall<List<TimeSlotBarWithTimeStamp>> {
         // FIXME Refactor to use a more pluggable model
@@ -2208,44 +2146,6 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
         }
     }
 
-    protected class MinutesBarCall extends AsyncFunctionCall<List<TimeSlotBarWithTimeStamp>> {
-              // FIXME Refactor to use a more pluggable model
-        private String symbol;
-        private String tag;
-        private String from;
-        private String to;
-
-        protected MinutesBarCall(String symbol, String from, String to, String tag) {
-            this.symbol = symbol;
-            this.from = from;
-            this.to = to;
-            this.tag = tag;
-        }
-
-        /**
-         * Performs the asynchronous call (the "body" of the function). If you need argument (as you probably do) then
-         * they should be in the constructor.
-         *
-         * @throws Exception
-         */
-        @Override
-        protected void asyncCall() throws Exception {
-            facade.sendMinuteDataRequest(symbol, from, to, tag);
-        }
-
-        /**
-         * Computes the argument signature to use for call equivalence. If multiple calls are made withe the same
-         * argument signature, they are coalesced into one. If there is already a pending call with the same signature
-         * then no additional calls to asyncCall will be made, rather the call will simply share the future result with
-         * the other calls.
-         *
-         * @return the arguments signature to identify equivalent calls
-         */
-        @Override
-        protected String computeArgumentsSignature() {
-            return tag;
-        }
-    }
 
     /**
      * The async call for the seconds bar request. the main difference between this and MinutesBarCall is tha the
