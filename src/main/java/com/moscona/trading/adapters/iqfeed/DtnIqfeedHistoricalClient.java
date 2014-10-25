@@ -576,6 +576,28 @@ public class DtnIqfeedHistoricalClient implements IDtnIQFeedHistoricalClient {
         }
     }
 
+    /**
+     * Gets a minute chart for the symbol, possibly with some values missing. Note that the from and to times must both
+     * be from the same day, or an exception might be thrown.
+     *
+     * @param symbol     the symbol for which historic data is requested
+     * @param from       the starting time (the beginning of this minute is the beginning of the first minute to be
+     *                   retrieved)
+     * @param to         the ending time (the end of this minute is the end of the last minute to be retrieved)
+     * @param timeout    the maximum time allowed to spend on this operation
+     * @param unit       the units for the timeout
+     * @param retryLimit the maximum number of allowed retry attempt on errors that justify a retry
+     * @return a SymbolChart with the historic data in the time period. Some slots may be null
+     * @throws com.moscona.exceptions.InvalidArgumentException
+     * @throws com.moscona.exceptions.InvalidStateException
+     * @throws java.util.concurrent.TimeoutException
+     * @throws com.moscona.trading.excptions.MissingSymbolException
+     */
+    @Override
+    public SymbolChart getDayBars(String symbol, Calendar from, Calendar to, int timeout, TimeUnit unit, int retryLimit) throws InvalidArgumentException, InvalidStateException, TimeoutException, MissingSymbolException {
+        return null;  //FIXME implement DtnIqfeedHistoricalClient.getDayBars
+    }
+
     @Override
     /**
      * Gets a minute chart for the symbol, possibly with some values missing.

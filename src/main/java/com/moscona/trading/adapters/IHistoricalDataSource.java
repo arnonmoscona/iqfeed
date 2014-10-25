@@ -30,7 +30,29 @@ public interface IHistoricalDataSource {
      * @throws com.moscona.trading.excptions.MissingSymbolException
      * @throws java.util.concurrent.TimeoutException
      */
-    void updateSplitsFor(String symbol, SplitsDb splits, int timeout, TimeUnit timeoutUnit) throws InvalidArgumentException, InvalidStateException, TimeoutException, MissingSymbolException;
+    void updateSplitsFor(String symbol, SplitsDb splits, int timeout, TimeUnit timeoutUnit) throws InvalidArgumentException, InvalidStateException, TimeoutException, MissingSymbolException;  // FIXME Should depend on an interface for splitdb IQ-12
+
+    // FIXME missing hourly bars IQ-12
+    // FIXME missing 5 min bars IQ-12
+
+    /**
+     * Gets a minute chart for the symbol, possibly with some values missing. Note that the from and to times must both
+     * be from the same day, or an exception might be thrown.
+     *
+     * @param symbol     the symbol for which historic data is requested
+     * @param from       the starting time (the beginning of this minute is the beginning of the first minute to be
+     *                   retrieved)
+     * @param to         the ending time (the end of this minute is the end of the last minute to be retrieved)
+     * @param timeout    the maximum time allowed to spend on this operation
+     * @param unit       the units for the timeout
+     * @param retryLimit the maximum number of allowed retry attempt on errors that justify a retry
+     * @return a SymbolChart with the historic data in the time period. Some slots may be null
+     * @throws com.moscona.exceptions.InvalidArgumentException
+     * @throws com.moscona.exceptions.InvalidStateException
+     * @throws java.util.concurrent.TimeoutException
+     * @throws MissingSymbolException
+     */
+    public SymbolChart getDayBars(String symbol, Calendar from, Calendar to, int timeout, TimeUnit unit, int retryLimit) throws InvalidArgumentException, InvalidStateException, TimeoutException, MissingSymbolException;
 
     /**
      * Gets a minute chart for the symbol, possibly with some values missing. Note that the from and to times must both
